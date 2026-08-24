@@ -5,7 +5,7 @@ extends RefCounted
 const DEFAULT_TEARDOWN_ROOT := "res://external/teardown_maps/lee"
 const DEFAULT_TEARDOWN_MAP := DEFAULT_TEARDOWN_ROOT + "/main.xml"
 const DEFAULT_TEARDOWN_VOX_DIR := DEFAULT_TEARDOWN_ROOT + "/vox/"
-const TEARDOWN_MAP_ENV := "VOXEL_DESTRUCTION_MAP"
+const TEARDOWN_MAP_ENV := "SHATTERGRID_MAP"
 
 
 static func teardown_map_path() -> String:

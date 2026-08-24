@@ -1,6 +1,6 @@
 <div align="center">
-  <img src="icon.svg" width="96" alt="Voxel Destruction">
-  <h1>Voxel Destruction</h1>
+  <img src="icon.svg" width="96" alt="Shattergrid">
+  <h1>Shattergrid</h1>
   <p>Sandbox voxel destructible para Godot 4, con renderer DDA dedicado y física Jolt.</p>
 
   <p>
@@ -58,7 +58,7 @@ un `main.xml` convertido junto a su carpeta `vox/`. Puedes pasar una ruta de tre
 godot --path . -- --teardown-map=/ruta/al/mapa/main.xml
 
 # Variable de entorno
-VOXEL_DESTRUCTION_MAP=/ruta/al/mapa/main.xml godot --path .
+SHATTERGRID_MAP=/ruta/al/mapa/main.xml godot --path .
 
 # Ruta local convencional para el editor y las sondas de integración
 mkdir -p external/teardown_maps
@@ -95,7 +95,7 @@ godot --headless --path . --script res://tests/water_system_selftest.gd
 ```
 
 Las sondas cuyos nombres empiezan por `map_`, además de los censos de Lee y las pruebas completas
-de vehículos, requieren `VOXEL_DESTRUCTION_MAP` o el mapa local en
+de vehículos, requieren `SHATTERGRID_MAP` o el mapa local en
 `external/teardown_maps/lee`.
 
 ## Estructura

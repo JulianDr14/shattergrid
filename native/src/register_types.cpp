@@ -9,7 +9,7 @@
 
 using namespace godot;
 
-static void initialize_voxel_teardown_core(ModuleInitializationLevel p_level) {
+static void initialize_shattergrid_core(ModuleInitializationLevel p_level) {
     if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
         return;
     }
@@ -20,20 +20,20 @@ static void initialize_voxel_teardown_core(ModuleInitializationLevel p_level) {
     GDREGISTER_CLASS(VoxelRendererSettings);
 }
 
-static void uninitialize_voxel_teardown_core(ModuleInitializationLevel p_level) {
+static void uninitialize_shattergrid_core(ModuleInitializationLevel p_level) {
     if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
         return;
     }
 }
 
 extern "C" {
-GDExtensionBool GDE_EXPORT voxel_teardown_core_init(
+GDExtensionBool GDE_EXPORT shattergrid_core_init(
         GDExtensionInterfaceGetProcAddress p_get_proc_address,
         const GDExtensionClassLibraryPtr p_library,
         GDExtensionInitialization *r_initialization) {
     GDExtensionBinding::InitObject init_obj(p_get_proc_address, p_library, r_initialization);
-    init_obj.register_initializer(initialize_voxel_teardown_core);
-    init_obj.register_terminator(uninitialize_voxel_teardown_core);
+    init_obj.register_initializer(initialize_shattergrid_core);
+    init_obj.register_terminator(uninitialize_shattergrid_core);
     init_obj.set_minimum_library_initialization_level(MODULE_INITIALIZATION_LEVEL_SCENE);
     return init_obj.init();
 }

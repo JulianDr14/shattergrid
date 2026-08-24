@@ -17,7 +17,7 @@ const IMPLEMENTATION_FILES := [
 	"res://scripts/teardown_palette.gd",
 	"res://scripts/voxel_body_3d.gd",
 	"res://scripts/voxel_world_3d.gd",
-	"res://native/bin/libvoxel_teardown_core.dylib",
+	"res://native/bin/libshattergrid_core.dylib",
 ]
 
 

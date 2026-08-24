@@ -1,0 +1,10 @@
+[configuration]
+
+entry_symbol = "shattergrid_core_init"
+compatibility_minimum = "4.7"
+reloadable = true
+
+[libraries]
+
+macos.debug = "res://native/bin/libshattergrid_core.dylib"
+macos.release = "res://native/bin/libshattergrid_core.dylib"

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(voxel_teardown_core LANGUAGES CXX)
+project(shattergrid_core LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -22,7 +22,7 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(godot_cpp)
 
-add_library(voxel_teardown_core SHARED
+add_library(shattergrid_core SHARED
 	native/src/register_types.cpp
 	native/src/voxel_shape_data.cpp
 	native/src/voxel_brick_pool.cpp
@@ -30,13 +30,13 @@ add_library(voxel_teardown_core SHARED
 	native/src/voxel_settings.cpp
 )
 
-target_include_directories(voxel_teardown_core PRIVATE native/include)
-target_link_libraries(voxel_teardown_core PRIVATE godot::cpp)
-target_compile_definitions(voxel_teardown_core PRIVATE GODOT_CPP_NO_THREAD_LOCAL)
+target_include_directories(shattergrid_core PRIVATE native/include)
+target_link_libraries(shattergrid_core PRIVATE godot::cpp)
+target_compile_definitions(shattergrid_core PRIVATE GODOT_CPP_NO_THREAD_LOCAL)
 
 if(APPLE)
-	set_target_properties(voxel_teardown_core PROPERTIES
-		OUTPUT_NAME "voxel_teardown_core"
+	set_target_properties(shattergrid_core PROPERTIES
+		OUTPUT_NAME "shattergrid_core"
 		LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native/bin"
 		BUILD_RPATH "@loader_path"
 		INSTALL_RPATH "@loader_path"

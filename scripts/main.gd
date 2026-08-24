@@ -1,7 +1,7 @@
 extends Node3D
 ## Escena principal, HUD, carga de mapas y herramientas de diagnóstico.
 
-## El mapa opcional de Teardown se resuelve mediante `VOXEL_DESTRUCTION_MAP`,
+## El mapa opcional de Teardown se resuelve mediante `SHATTERGRID_MAP`,
 ## `res://external/teardown_maps/lee/main.xml` o `--teardown-map=<ruta>`. Los datos originales no
 ## forman parte del proyecto. `--no-teardown-map` fuerza el escenario incluido.
 ## Sin recorte: el mapa entero son 2312 Shapes y 79,3 M de voxeles, y con el atlas por bricks entra
@@ -170,7 +170,7 @@ func _ready() -> void:
 
 
 ## Carga un mapa convertido con `--teardown-map=<ruta a main.xml>`, la variable de entorno
-## `VOXEL_DESTRUCTION_MAP` o la ruta local ignorada por Git. `--teardown-radius=<metros>` limita la
+## `SHATTERGRID_MAP` o la ruta local ignorada por Git. `--teardown-radius=<metros>` limita la
 ## importación. Si no existe el recurso opcional, se conserva el escenario incluido.
 
 
@@ -828,7 +828,7 @@ func _run_benchmark_impact() -> void:
 	var call_ms := (Time.get_ticks_usec() - started) / 1000.0
 	_destruction_call_times.append(call_ms)
 	var profile := _voxel_world.get_metrics()
-	print("VOXEL_DESTRUCTION_IMPACT_PROFILE ", JSON.stringify({
+	print("SHATTERGRID_IMPACT_PROFILE ", JSON.stringify({
 		"body": body.name,
 		"dimensions": shape.data.get_dimensions(),
 		"call_ms": snappedf(call_ms, 0.001),
@@ -910,7 +910,7 @@ func _finish_destruction_benchmark() -> void:
 	result["pass"] = _destruction_impacts >= 8 and _destruction_removed > 0 \
 		and _destruction_particles_peak > 0 and impact_p95 <= 33.3 \
 		and frame_max <= 66.7 and call_p95 <= 33.3
-	print("VOXEL_DESTRUCTION_BENCHMARK_RESULT ", JSON.stringify(result))
+	print("SHATTERGRID_BENCHMARK_RESULT ", JSON.stringify(result))
 	get_tree().quit(0 if result.pass else 81)
 
 
