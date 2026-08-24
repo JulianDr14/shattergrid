@@ -1,0 +1,69 @@
+# Godot
+/.godot/
+/.import/
+*.import
+/android/
+/ios/
+/export_credentials.cfg
+
+# Native builds and exported packages
+/build/
+/native/bin/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+*.a
+*.dylib
+*.dll
+*.so
+*.dSYM/
+*.pck
+*.dmg
+*.zip
+
+# Local map data and generated caches
+/external/
+/teardown_maps/
+*.tdbin
+*.dxvk-cache
+
+# Local reference assets derived from licensed map data
+/assets/models/suv/
+/assets/prototype/
+/scenes/Word.tscn
+/scenes/suv.tscn
+/scenes/cam.gd
+/scenes/cam.gd.uid
+/scenes/car.gd
+/scenes/car.gd.uid
+/scenes/word.gd
+/scenes/word.gd.uid
+/tests/suspension_probe.gd
+/tests/suspension_probe.gd.uid
+/tests/word_perf_probe.gd
+/tests/word_perf_probe.gd.uid
+/tests/word_perf_probe.tscn
+
+# Editor, operating-system and diagnostic files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.code-workspace
+*.log
+*.tmp
+*.temp
+*.bak
+*.orig
+*.swp
+*~
+crash_dump*
+
+# Local environment files and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.mobileprovision

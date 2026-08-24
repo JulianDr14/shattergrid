@@ -1,0 +1,9 @@
+<scene version="1.6.2">
+	<spawnpoint pos="5 1 5"/>
+	<boundary>
+		<vertex pos="0 0"/>
+		<vertex pos="10 0"/>
+		<vertex pos="10 10"/>
+		<vertex pos="0 10"/>
+	</boundary>
+</scene>

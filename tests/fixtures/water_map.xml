@@ -1,0 +1,28 @@
+<scene version="1.6.2">
+	<environment skyboxtint="0.8 0.6 0.4"/>
+	<group name="Water">
+		<water pos="10 2 20" rot="0 -90 0" type="polygon" depth="1" ripple="1">
+			<vertex pos="-1 -0.5"/>
+			<vertex pos="1 -0.5"/>
+			<vertex pos="1 0.5"/>
+			<vertex pos="-1 0.5"/>
+		</water>
+		<water pos="0 0.4 0" type="polygon" visibility="3.1" color="0.01 0.05 0.01">
+			<vertex pos="-2 -2"/>
+			<vertex pos="2 -2"/>
+			<vertex pos="0 0"/>
+			<vertex pos="2 2"/>
+			<vertex pos="-2 2"/>
+		</water>
+		<water pos="-8 1 4" type="polygon" ripple="0">
+			<vertex pos="-1 -1"/>
+			<vertex pos="1 -1"/>
+			<vertex pos="0 1"/>
+		</water>
+	</group>
+	<group name="Props">
+		<body pos="30 0 0" dynamic="true">
+			<voxbox size="2 2 2" material="wood" density="0.25" color="0.4 0.2 0.1"/>
+		</body>
+	</group>
+</scene>
