@@ -7,6 +7,7 @@
     <img src="https://img.shields.io/badge/Godot-4.7-478CBF?logo=godot-engine&amp;logoColor=white" alt="Godot 4.7">
     <img src="https://img.shields.io/badge/C++-17-00599C?logo=cplusplus&amp;logoColor=white" alt="C++ 17">
     <img src="https://img.shields.io/badge/renderer-Vulkan%20DDA-6D5DFB" alt="Vulkan DDA">
+    <img src="https://img.shields.io/badge/license-Apache--2.0-D22128" alt="Apache License 2.0">
   </p>
 </div>
 
@@ -108,6 +109,17 @@ de vehículos, requieren `VOXEL_DESTRUCTION_MAP` o el mapa local en
 | `prototype/` | Bancos aislados del renderer |
 | `models/` | Escenario voxel incluido y modelos con atribución documentada |
 
+## Licencia
+
+Salvo donde se indique lo contrario, el código y el material original del proyecto se distribuyen
+bajo la [Apache License 2.0](LICENSE). Copyright © 2026
+[JulianDr14](https://github.com/JulianDr14).
+
+Apache 2.0 permite usar, modificar y distribuir el proyecto, incluso comercialmente, sin regalías.
+Las redistribuciones deben conservar la licencia, los avisos aplicables y la atribución incluida en
+[NOTICE](NOTICE). Los assets de terceros enumerados allí conservan sus licencias respectivas y no
+quedan relicenciados por la licencia principal del proyecto.
+
 ## Datos externos y créditos
 
 Este proyecto implementa ideas públicas de representación `Body / Shape / Joint`; no incluye
@@ -118,3 +130,7 @@ como referencia técnica con archivos que aporta localmente cada usuario.
 [Mini Mike's Metro Minis](https://github.com/mikelovesrobots/mmmm), de Mike Judge, bajo
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Los archivos fuente no fueron
 modificados; la conversión de ejes y escala se realiza durante la carga.
+
+`icon.svg` adapta el logotipo de Godot Engine, Copyright © 2017 Andrea Calabró, bajo
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Se adaptó como icono cuadrado redondeado
+para este proyecto. Los detalles y enlaces de origen se conservan en [NOTICE](NOTICE).

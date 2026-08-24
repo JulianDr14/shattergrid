@@ -1,0 +1,18 @@
+Voxel Destruction
+Copyright 2026 JulianDr14
+https://github.com/JulianDr14
+
+This product includes software developed by JulianDr14.
+
+Third-party materials distributed with this project retain their own licenses:
+
+* icon.svg is adapted from the Godot Engine logo,
+  Copyright 2017 Andrea Calabró, licensed under CC BY 4.0.
+  Source: https://github.com/godotengine/godot/blob/master/misc/logo/LICENSE.txt
+  Changes: adapted to a rounded-square project icon.
+
+* models/casa_barrio.vox, models/casa_dos_plantas.vox, and
+  models/casa_garaje.vox are from Mini Mike's Metro Minis by Mike Judge,
+  licensed under CC BY 4.0.
+  Source: https://github.com/mikelovesrobots/mmmm
+  Changes: the source files are unmodified; axes and scale are converted at runtime.
