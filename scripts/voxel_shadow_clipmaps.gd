@@ -63,11 +63,8 @@ var _origins: Array[Vector3i] = []
 var _logical_sizes: Array[Vector3i] = []
 var _packed_sizes: Array[Vector3i] = []
 var _base_cell_size := BASE_CELL_SIZE
-var _dynamic_bounds := {}
-var _tracked_dynamic := {}
-## Solo las Shapes que ahora mismo son dinamicas.
-var _dynamic_keys := {}
 var _transform_tracker := VoxelTransformTracker.new()
+var _update_planner := VoxelShadowUpdatePlanner.new()
 var _movable_bounds := {}
 var _shape_cache: Array[VoxelShape3D] = []
 var _shape_cache_frame := -1
@@ -76,8 +73,6 @@ var _grid := VoxelShapeGrid.new()
 ## Cajas sucias que no entraron en el presupuesto del frame anterior.
 ## Por donde empieza el reparto de turnos: sin rotarlo, las primeras Shapes de la lista se comen el
 ## cupo cada frame y las ultimas no ven una actualizacion de sombra jamas.
-var _round_robin := 0
-var _sweep_countdown := 0
 ## Cajas de daño pendientes por nivel, sin fusionar mas alla de `MERGE_MAX_SIDE`.
 var _pending_damage_regions: Array = []
 var _damage_level_cursor := 1
@@ -219,25 +214,24 @@ func _process(_delta: float) -> void:
 
 
 func _rebuild_all() -> void:
-	_dynamic_bounds.clear()
-	_tracked_dynamic.clear()
-	_dynamic_keys.clear()
 	var group := _shape_group()
 	for level in LEVELS:
 		var packed := _rasterize_level(group, level)
 		_textures[level].update_region(
 			packed, Vector3i.ZERO, _packed_sizes[level] - Vector3i.ONE
 		)
+	var tracked_shapes: Array = []
+	var tracked_bounds: Array = []
+	var tracked_dynamic: Array = []
 	for shape: VoxelShape3D in _all_shapes():
-		var key := shape.get_instance_id()
 		var body := _body_of(shape)
 		var dynamic := body != null and body.state == VoxelBody3D.State.DYNAMIC
 		var bounds := shape.world_bounds()
 		_grid.insert(shape, bounds)
-		_dynamic_bounds[key] = bounds
-		_tracked_dynamic[key] = dynamic
-		if dynamic:
-			_dynamic_keys[key] = true
+		tracked_shapes.append(shape)
+		tracked_bounds.append(bounds)
+		tracked_dynamic.append(dynamic)
+	_update_planner.reset(tracked_shapes, tracked_bounds, tracked_dynamic)
 	last_upload_bytes = total_memory_bytes
 
 
@@ -298,79 +292,20 @@ func _refresh_world_cell_region(level: int, logical_region: AABB) -> void:
 
 func _update_dynamic_shapes() -> void:
 	var started := Time.get_ticks_usec()
-	var dirty: Array[AABB] = []
 	var movable := _movable_shapes()
-	if not movable.is_empty():
-		_round_robin = _round_robin % movable.size()
-		movable = movable.slice(_round_robin) + movable.slice(0, _round_robin)
-		_round_robin += SHAPES_PER_FRAME
-	for shape in movable:
-		var body := _body_of(shape)
-		var key := shape.get_instance_id()
-		var dynamic := body != null and body.state == VoxelBody3D.State.DYNAMIC
-		# Objetos con varios elementos visuales que se mueven juntos (carrocería + cuatro ruedas)
-		# comparten intervalo y fase. Saltar aquí conserva `_dynamic_bounds` antigua: cuando llega el
-		# turno se repinta la unión exacta entre la última postura publicada y la actual, sin estelas.
-		var interval := maxi(1, int(body.get_meta("voxel_shadow_interval_frames", 1))) \
-			if body != null else 1
-		var phase := int(body.get_meta("voxel_shadow_phase", 0)) if body != null else 0
-		if interval > 1 and _dynamic_bounds.has(key) \
-				and Engine.get_process_frames() % interval != phase:
-			continue
-		var current: AABB = _movable_bounds[key] \
-			if _movable_bounds.has(key) else shape.world_bounds()
-		var previous: AABB = _dynamic_bounds.get(key, current)
-		var was_dynamic := bool(_tracked_dynamic.get(key, false))
-		var needs_refresh := dynamic != was_dynamic \
-			or (dynamic and _moved_a_cell(previous, current)) \
-			or not _dynamic_bounds.has(key)
-		if needs_refresh:
-			_grid.insert(shape, current)
-			if dirty.size() >= SHAPES_PER_FRAME:
-				# Sin turno este frame. No se toca `_dynamic_bounds`, asi que la Shape sigue sucia y
-				# el frame que le toque fusionara la postura vieja con la nueva: la sombra se retrasa
-				# unas decimas, pero no se queda encendido el hueco que dejo atras.
-				continue
-			dirty.append(previous.merge(current).grow(_base_cell_size))
-		elif not _grid.has_id(key):
-			# Un fragmento recien nacido: entra en la rejilla el primer frame que despierta.
-			_grid.insert(shape, current)
-		elif dynamic:
-			# Dentro de la zona muerta: se conserva la postura vieja para que la deriva se sume.
-			_tracked_dynamic[key] = dynamic
-			_dynamic_keys[key] = true
-			continue
-		_dynamic_bounds[key] = current
-		_tracked_dynamic[key] = dynamic
-		if dynamic:
-			_dynamic_keys[key] = true
-		else:
-			_dynamic_keys.erase(key)
-	# Una Shape que desaparece deja su hueco encendido en el volumen si nadie lo apaga. No se puede
-	# deducir de "no estaba en la lista de este frame": desde que solo se miran los cuerpos
-	# despiertos, la mayoria de las dinamicas no aparecen en ella y estan perfectamente vivas. Lo
-	# que se comprueba es que el objeto siga existiendo.
-	#
-	# Y no hace falta cada frame: el hueco se apaga un cuarto de segundo mas tarde y nadie lo nota.
-	# Barrer siempre eran mil `voxel_count()` por frame sobre una lista que crece segun se despiertan
-	# props, y `dinamico` subia sola de 5 a 10 ms con ocho cuerpos despiertos y cero raster.
-	_sweep_countdown -= 1
-	if _sweep_countdown <= 0:
-		_sweep_countdown = SWEEP_EVERY_FRAMES
-		for key in _dynamic_keys.keys():
-			var tracked := instance_from_id(key) as VoxelShape3D
-			if tracked != null and tracked.voxel_count() > 0:
-				continue
-			dirty.append(_dynamic_bounds[key] as AABB)
-			_grid.remove_id(key)
-			_dynamic_bounds.erase(key)
-			_tracked_dynamic.erase(key)
-			_dynamic_keys.erase(key)
+	var plan: Dictionary = _update_planner.plan(
+		movable, _movable_bounds, Engine.get_process_frames(), SHAPES_PER_FRAME,
+		SHADOW_DEADBAND_SQ, _base_cell_size, SWEEP_EVERY_FRAMES, MERGE_MAX_SIDE
+	)
+	for update: Dictionary in plan.grid_updates:
+		_grid.insert(update.shape, update.bounds)
+	for key in plan.removals:
+		_grid.remove_id(key)
 	# Cada cosa que se mueve refresca SU caja, en los cuatro niveles. Antes se fusionaban todas en
 	# una sola region para que el coste fuera O(Shapes) y no O(Shapes x niveles); con el barrido de
 	# 10 ms por region eso tenia sentido, con la rejilla ya no, y la fusion a ciegas era ademas la
 	# mina: dos escombros en extremos opuestos daban una caja de 250 m, y eso son 106 s de raster.
-	for region in _coalesce(dirty):
+	for region in plan.dirty:
 		for level in LEVELS:
 			_refresh_world_aabb(level, region)
 	last_dynamic_update_ms = (Time.get_ticks_usec() - started) / 1000.0
@@ -465,31 +400,8 @@ func _refresh_world_aabb(level: int, world_region: AABB) -> void:
 const MERGE_MAX_SIDE := 8.0
 
 
-static func _coalesce(regions: Array[AABB]) -> Array[AABB]:
-	var result: Array[AABB] = []
-	for region in regions:
-		var merged := false
-		for position in result.size():
-			var candidate: AABB = result[position].merge(region)
-			var side: Vector3 = candidate.size
-			if maxf(side.x, maxf(side.y, side.z)) <= MERGE_MAX_SIDE:
-				result[position] = candidate
-				merged = true
-				break
-		if not merged:
-			result.append(region)
-	return result
-
-
-## Zona muerta de una celda. El volumen de sombra esta voxelizado: un objeto que no se ha movido ni
-## una celda no puede cambiar ni un bit, asi que repintarlo es trabajo tirado. Y no es un caso raro —
-## las cadenas de tuberia de Lee cuelgan de constraints que nunca terminan de converger y tiemblan
-## milimetros para siempre; sin esta zona muerta, 65 tramos quietos costaban 12 ms de raster por
-## frame sin que se moviera nada visible. La postura vieja se conserva hasta que el objeto rebasa el
-## umbral, asi que la deriva se acumula y acaba refrescandose.
-static func _moved_a_cell(previous: AABB, current: AABB) -> bool:
-	return previous.position.distance_squared_to(current.position) > SHADOW_DEADBAND_SQ \
-		or previous.end.distance_squared_to(current.end) > SHADOW_DEADBAND_SQ
+func _coalesce(regions: Array[AABB]) -> Array[AABB]:
+	return _update_planner.coalesce(regions, MERGE_MAX_SIDE)
 
 
 func _cell_size(level: int) -> float:
@@ -502,7 +414,7 @@ func _movable_shapes() -> Array[VoxelShape3D]:
 	_movable_bounds.clear()
 	if _world == null:
 		return result
-	var snapshot: Dictionary = _transform_tracker.collect(_world.get_awake_dynamic_body_ids())
+	var snapshot: Dictionary = _transform_tracker.collect(_world.get_transform_tracked_body_ids())
 	var snapshot_shapes: Array = snapshot.shapes
 	var bounds: Array = snapshot.bounds
 	for index in mini(snapshot_shapes.size(), bounds.size()):

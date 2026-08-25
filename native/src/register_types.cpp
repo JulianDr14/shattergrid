@@ -13,6 +13,12 @@
 #include "voxel_support_planner.hpp"
 #include "voxel_structural_graph.hpp"
 #include "voxel_damage_planner.hpp"
+#include "voxel_mass_properties.hpp"
+#include "voxel_asset_decoder.hpp"
+#include "voxel_shadow_update_planner.hpp"
+#include "voxel_motion_damage_scanner.hpp"
+#include "voxel_map_scene_traversal.hpp"
+#include "voxel_map_scene_committer.hpp"
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/defs.hpp>
@@ -40,6 +46,12 @@ static void initialize_shattergrid_core(ModuleInitializationLevel p_level) {
     GDREGISTER_CLASS(VoxelSupportPlanner);
     GDREGISTER_CLASS(VoxelStructuralGraph);
     GDREGISTER_CLASS(VoxelDamagePlanner);
+    GDREGISTER_CLASS(VoxelMassProperties);
+    GDREGISTER_CLASS(VoxelAssetDecoder);
+    GDREGISTER_CLASS(VoxelShadowUpdatePlanner);
+    GDREGISTER_CLASS(VoxelMotionDamageScanner);
+    GDREGISTER_CLASS(VoxelMapSceneTraversal);
+    GDREGISTER_CLASS(VoxelMapSceneCommitter);
 }
 
 static void uninitialize_shattergrid_core(ModuleInitializationLevel p_level) {

@@ -25,6 +25,8 @@ extends RefCounted
 
 const DEFAULT_RADIUS := 45.0
 const TeardownBoundary := preload("res://scripts/teardown_boundary_3d.gd")
+const VoxelBodyScript := preload("res://scripts/voxel_body_3d.gd")
+const VoxelShapeScript := preload("res://scripts/voxel_shape_3d.gd")
 
 ## Tope de celdas densas que se admite cargar. El mapa entero son 443 M de celdas y el motor
 ## guarda un byte por celda, así que sin freno el import se come la RAM antes de terminar.
@@ -65,6 +67,8 @@ var _compiled_cache_broken := false
 var _compiled_face_blocks := 0
 var _last_attached_shape: VoxelShape3D
 var _planner := VoxelMapImportPlanner.new()
+var _scene_traversal := VoxelMapSceneTraversal.new()
+var _scene_committer := VoxelMapSceneCommitter.new()
 var _report := {
 	"shapes": 0, "voxboxes": 0, "bodies": 0, "joints": 0,
 	"authored_dynamic_bodies": 0, "imported_dynamic_bodies": 0, "density_overrides": 0,
@@ -148,8 +152,9 @@ func _run(
 		"world": world, "folder": folder, "center": center, "radius": radius,
 		"offset": offset, "body": null, "dynamic": false, "body_attributes": {},
 	}
-	for child: Dictionary in root.children:
-		_visit(child, Transform3D(Basis.IDENTITY, offset - center), context)
+	_report["visited_elements"] = _scene_traversal.traverse(
+		root.children, Transform3D(Basis.IDENTITY, offset - center), context, _commit_element
+	)
 	var vehicle_started := Time.get_ticks_usec()
 	_configure_vehicles()
 	_report["vehicle_config_ms"] = (Time.get_ticks_usec() - vehicle_started) / 1000.0
@@ -242,14 +247,11 @@ func _create_boundary(world: VoxelWorld3D, points: PackedVector3Array) -> void:
 	_report.boundary_depth = snappedf(maximum.y - minimum.y, 0.01)
 
 
-func _visit(element: Dictionary, parent_transform: Transform3D, context: Dictionary) -> void:
+func _commit_element(
+	element: Dictionary, transform: Transform3D, context: Dictionary
+) -> Dictionary:
 	var tag: String = element.tag
 	var attributes: Dictionary = element.attributes
-	var local := Transform3D(
-		Basis(_planner.parse_rotation(attributes.get("rot", ""))),
-		_planner.parse_vec3(attributes.get("pos", ""))
-	)
-	var transform := parent_transform * local
 	var child_context := context
 
 	match tag:
@@ -308,13 +310,13 @@ func _visit(element: Dictionary, parent_transform: Transform3D, context: Diction
 			_pending_joints.append({
 				"attributes": attributes, "transform": transform, "body": context.body,
 			})
-			return
+			return {"visit_children": false}
 		"rope":
 			_add_rope(element, transform)
-			return
+			return {"visit_children": false}
 		"water":
 			_add_water(element, transform, context)
-			return
+			return {"visit_children": false}
 		"light":
 			var light_vehicle: Dictionary = context.get("vehicle", {})
 			if not light_vehicle.is_empty():
@@ -322,21 +324,20 @@ func _visit(element: Dictionary, parent_transform: Transform3D, context: Diction
 					"attributes": attributes.duplicate(), "transform": transform,
 				})
 				_report.vehicle_lights += 1
-			return
+			return {"visit_children": false}
 		"location":
 			var location_vehicle: Dictionary = context.get("vehicle", {})
 			if not location_vehicle.is_empty() \
 					and _has_tag(String(attributes.get("tags", "")), "player"):
 				location_vehicle.seat_transform = transform
-			return
+			return {"visit_children": false}
 		# Disparadores, scripts Lua y pantallas no tienen equivalente; su geometría hija sí se
 		# recorre cuando corresponde.
 		"trigger", "screen", "boundary", "environment", \
 		"postprocessing", "spawnpoint", "vertex":
-			return
+			return {"visit_children": false}
 
-	for child: Dictionary in element.children:
-		_visit(child, transform, child_context)
+	return {"context": child_context, "visit_children": true}
 
 
 ## Los `<vertex pos="x z">` de una superficie de Teardown viven sobre su plano XZ local. El nodo
@@ -677,80 +678,25 @@ func _attach(
 	palette: VoxelPalette, context: Dictionary, collides := true,
 	baked_faces: Array = [], use_baked_collision := false, density_scale := 1.0
 ) -> VoxelBody3D:
-	var shape := VoxelShape3D.new()
-	_last_attached_shape = shape
-	shape.data = data
-	shape.palette = palette
-	shape.voxel_size = voxel_size
-	shape.density_scale = maxf(density_scale, 0.001)
-	shape.physical_fill_scale = AUTHORED_DYNAMIC_FILL_SCALE \
-		if context.dynamic and collides else 1.0
-	if not is_equal_approx(shape.density_scale, 1.0):
-		_report.density_overrides += 1
-	# Sin anclas. El modelo estructural de Teardown es deliberadamente flojo: el escenario no se
-	# viene abajo por quitarle un pilar, solo caen los trozos que quedan sueltos. Con `anchored`
-	# activo haría falta además leer 27 M de celdas en GDScript para marcar la capa de apoyo.
-	shape.anchored = false
-	shape.transform = transform
-	# `collide="false"` marca el decorado que en Teardown se atraviesa: letreros, follaje de fondo,
-	# cables de las farolas. Sin esto quedan 175 paredes invisibles repartidas por el mapa, porque la
-	# Shape sigue generando colisión aunque apenas se vea. Se aísla en su propio cuerpo: los `<body>`
-	# dinámicos comparten uno solo y ahí no se puede apagar la colisión de una sola Shape.
-	var vehicle: Dictionary = context.get("vehicle", {})
-	var wheel_record: Dictionary = context.get("vehicle_wheel", {})
-	var wheel_visual := not vehicle.is_empty() and not wheel_record.is_empty()
-	var body: VoxelBody3D = context.body
-	if wheel_visual:
-		body = vehicle.get("visual_body") as VoxelBody3D
-		if body == null:
-			body = VoxelBody3D.new()
-			body.name = "TeardownVehicleWheels%d" % _report.vehicle_visual_bodies
-			body.state = VoxelBody3D.State.DYNAMIC
-			body.structural = false
-			body.collision_enabled = false
-			context.world.add_child(body)
-			vehicle.visual_body = body
-			_report.bodies += 1
-			_report.vehicle_visual_bodies += 1
-		shape.set_meta("vehicle_wheel_visual", true)
-		(wheel_record.shapes as Array).append(shape)
-		_report.no_collide += 1
-	elif not collides:
-		body = null
-		_report.no_collide += 1
-	if body == null:
-		body = VoxelBody3D.new()
-		body.name = "TeardownBody%d" % _report.bodies
-		body.state = VoxelBody3D.State.DYNAMIC if context.dynamic and collides \
-			else VoxelBody3D.State.STATIC
-		body.collision_enabled = _collision and collides
-		context.world.add_child(body)
-		_report.bodies += 1
-		# Las Shapes de un mismo `<body>` dinámico comparten cuerpo rígido, que es lo que las hace
-		# moverse juntas. El escenario estático va al revés: un StaticBody3D por Shape. Metiéndolas
-		# todas en uno solo, cada `add_child` obliga a Jolt a rehacer el compound entero y la carga
-		# se dispara al cuadrado — 3,3 M de voxeles tardaban 280 s en vez de los ~40 s lineales.
-		if context.dynamic and collides:
-			context.body = body
-	if not wheel_visual and not vehicle.is_empty() and context.dynamic and collides \
-			and vehicle.get("body") == null:
-		vehicle.body = body
-	var started := Time.get_ticks_msec()
-	var dynamic_body: bool = body.state == VoxelBody3D.State.DYNAMIC
-	body.add_voxel_shape(shape, false, not dynamic_body and not use_baked_collision)
-	if not dynamic_body and use_baked_collision:
-		if "--eager-teardown-cache" in OS.get_cmdline_user_args():
-			body.import_baked_static_collision(shape, baked_faces)
-		else:
-			context.world.queue_baked_static_collision(body, shape, baked_faces)
-	_report.collision_ms += Time.get_ticks_msec() - started
-	_report.faces_ms += body.last_faces_ms
-	_report.voxels += data.get_occupied_count()
-	var bounds := transform * AABB(
-		-Vector3(data.get_dimensions()) * voxel_size * 0.5,
-		Vector3(data.get_dimensions()) * voxel_size
+	var committed: Dictionary = _scene_committer.attach(
+		VoxelBodyScript, VoxelShapeScript, data, transform, voxel_size, palette, context,
+		collides, baked_faces, use_baked_collision, density_scale, _collision,
+		"--eager-teardown-cache" in OS.get_cmdline_user_args(), AUTHORED_DYNAMIC_FILL_SCALE,
+		int(_report.bodies), int(_report.vehicle_visual_bodies)
 	)
-	_bodies_bounds.append({"body": body, "bounds": bounds})
+	if not bool(committed.get("ok", false)):
+		_last_attached_shape = null
+		return null
+	var body := committed.body as VoxelBody3D
+	_last_attached_shape = committed.shape as VoxelShape3D
+	_report.bodies += int(committed.bodies_created)
+	_report.vehicle_visual_bodies += int(committed.visual_bodies_created)
+	_report.no_collide += int(committed.no_collide)
+	_report.density_overrides += int(bool(committed.density_override))
+	_report.collision_ms += float(committed.collision_ms)
+	_report.faces_ms += float(committed.faces_ms)
+	_report.voxels += int(committed.voxels)
+	_bodies_bounds.append({"body": body, "bounds": committed.bounds})
 	return body
 
 

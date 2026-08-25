@@ -167,7 +167,7 @@ func movable_shapes() -> Array[VoxelShape3D]:
 	_movable_transforms.clear()
 	if world == null:
 		return result
-	var snapshot: Dictionary = _transform_tracker.collect(world.get_awake_dynamic_body_ids())
+	var snapshot: Dictionary = _transform_tracker.collect(world.get_transform_tracked_body_ids())
 	var snapshot_shapes: Array = snapshot.shapes
 	var transforms: Array = snapshot.transforms
 	for index in mini(snapshot_shapes.size(), transforms.size()):

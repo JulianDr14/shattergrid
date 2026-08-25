@@ -89,11 +89,15 @@ var _burst_budget_pending := false
 var _maintenance_elapsed := 0.0
 var _body_cleanup_elapsed := 0.0
 var _physics_impact_queue := VoxelImpactQueue.new()
-var _motion_contact_cooldown := {}
+var _motion_damage_scanner := VoxelMotionDamageScanner.new()
 var _motion_scan_elapsed := 0.0
 var _particle_pool: VoxelParticlePool
 var _diagnostics: Label
 var _runtime_registry := VoxelRuntimeRegistry.new()
+## Bodies sin simulacion propia cuyas Shapes cambian de transformada desde otro controlador. Las
+## ruedas visuales son el caso principal: su Body auxiliar permanece congelado para no entrar al
+## solver, pero el renderer y la sombra deben seguirlas mientras VehicleWheel3D las anima.
+var _externally_transformed_body_ids := {}
 var _structural_graph := VoxelStructuralGraph.new()
 var _support_planner := VoxelSupportPlanner.new()
 var _damage_planner := VoxelDamagePlanner.new()
@@ -231,6 +235,7 @@ func register_shape(shape: VoxelShape3D) -> void:
 func unregister_body(body: VoxelBody3D) -> void:
 	if body == null:
 		return
+	untrack_external_body_transforms(body)
 	# Las ruedas authored viven en un Body visual sin colisión para no contaminar el compound de la
 	# carrocería. Su vida pertenece al vehículo: si la carrocería queda vacía por destrucción, no
 	# pueden permanecer cuatro ruedas fantasma en el renderer ni en la lista dinámica.
@@ -300,6 +305,26 @@ func get_awake_dynamic_body_ids() -> PackedInt64Array:
 	return _runtime_registry.get_awake_body_ids()
 
 
+## Fuente de transformadas para consumidores visuales. Se mantiene separada de
+## `get_awake_dynamic_body_ids`: un Body visual sin colision no debe inflar los presupuestos Jolt ni
+## el contador de cuerpos despiertos solo para que el renderer pueda seguirlo.
+func get_transform_tracked_body_ids() -> PackedInt64Array:
+	var result := get_awake_dynamic_body_ids()
+	for body_id: int in _externally_transformed_body_ids:
+		result.append(body_id)
+	return result
+
+
+func track_external_body_transforms(body: VoxelBody3D) -> void:
+	if body != null and is_instance_valid(body):
+		_externally_transformed_body_ids[body.get_instance_id()] = true
+
+
+func untrack_external_body_transforms(body: VoxelBody3D) -> void:
+	if body != null:
+		_externally_transformed_body_ids.erase(body.get_instance_id())
+
+
 func queue_collision_rebuild(body: VoxelBody3D) -> void:
 	var key := body.get_instance_id()
 	if _collision_rebuild_queued.has(key):
@@ -320,8 +345,16 @@ func prioritize_collision_rebuild(body: VoxelBody3D) -> void:
 func queue_baked_static_collision(
 	body: VoxelBody3D, shape: VoxelShape3D, records: Array
 ) -> void:
-	if records.is_empty() or body == null or shape == null \
+	if body == null or shape == null \
 			or body.state == VoxelBody3D.State.DYNAMIC or not body.collision_enabled:
+		return
+	# Una Shape puede ser visualmente densa pero no producir caras fisicas (material atravesable en
+	# una paleta compartida). Un caché válido con cero bloques es un resultado terminado, no una
+	# colisión atrasada: dejar su revisión en cero producía `coherence DESYNC` desde el arranque.
+	if records.is_empty():
+		body.acknowledge_static_collision_revision(shape)
+		_runtime_registry.set_baked_collision_pending(shape.get_instance_id(), false)
+		_sync_runtime_shape(shape, body)
 		return
 	_baked_collision_queue.append({
 		"body": body,
@@ -723,75 +756,14 @@ func _physics_process(delta: float) -> void:
 		return
 	_motion_scan_elapsed = 0.0
 	var started := Time.get_ticks_usec()
-	var tests := 0
-	var hits := 0
-	var now := Time.get_ticks_msec()
-	var moving_bodies: Array[VoxelBody3D] = []
-	for body: VoxelBody3D in get_awake_dynamic_bodies():
-		if body.collision_handoff_pending:
-			continue
-		body.update_adaptive_ccd()
-		var rigid := body.get_physics_body() as RigidBody3D
-		if rigid == null or rigid.linear_velocity.length() < MOTION_DAMAGE_MIN_SPEED:
-			continue
-		moving_bodies.append(body)
-	# Nunca dejar hambriento al Body que entró último en `_dynamic_bodies`: se prioriza energía
-	# cinética, por lo que una torre o una caja lanzada gana a cascotes pequeños que aún rebotan.
-	moving_bodies.sort_custom(func(a: VoxelBody3D, b: VoxelBody3D) -> bool:
-		var rigid_a := a.get_physics_body() as RigidBody3D
-		var rigid_b := b.get_physics_body() as RigidBody3D
-		return rigid_a.mass * rigid_a.linear_velocity.length_squared() \
-			> rigid_b.mass * rigid_b.linear_velocity.length_squared()
+	var scan: Dictionary = _motion_damage_scanner.scan(
+		self, _static_grid, get_awake_dynamic_bodies(), Time.get_ticks_msec(),
+		MOTION_DAMAGE_MIN_SPEED, MOTION_CONTACT_MARGIN, MAX_MOTION_BODIES_PER_TICK,
+		MAX_MOTION_CONTACT_TESTS_PER_TICK, MOTION_CONTACT_COOLDOWN_MSEC
 	)
-	for body: VoxelBody3D in moving_bodies.slice(
-		0, mini(MAX_MOTION_BODIES_PER_TICK, moving_bodies.size())
-	):
-		if tests >= MAX_MOTION_CONTACT_TESTS_PER_TICK:
-			break
-		var rigid := body.get_physics_body() as RigidBody3D
-		var speed := rigid.linear_velocity.length()
-		var center := rigid.to_global(rigid.center_of_mass)
-		for moving_shape in body.get_shapes():
-			if tests >= MAX_MOTION_CONTACT_TESTS_PER_TICK:
-				break
-			var moving_bounds := moving_shape.world_bounds()
-			var candidates: Array = _static_grid.query(moving_bounds.grow(MOTION_CONTACT_MARGIN))
-			candidates.sort_custom(func(a: VoxelShape3D, b: VoxelShape3D) -> bool:
-				return a.world_bounds().get_center().distance_squared_to(center) \
-					< b.world_bounds().get_center().distance_squared_to(center)
-			)
-			for target_shape: VoxelShape3D in candidates:
-				if tests >= MAX_MOTION_CONTACT_TESTS_PER_TICK:
-					break
-				var target := _body_of(target_shape)
-				if target == null or target == body or target.state != VoxelBody3D.State.STATIC \
-						or target.collision_enabled or _is_foundation(target_shape):
-					continue
-				var pair_key := "%d:%d" % [body.get_instance_id(), target.get_instance_id()]
-				if now - int(_motion_contact_cooldown.get(
-					pair_key, -MOTION_CONTACT_COOLDOWN_MSEC
-				)) < MOTION_CONTACT_COOLDOWN_MSEC:
-					continue
-				tests += 1
-				if not _shapes_touch_with_margin(
-					moving_shape, target_shape, MOTION_CONTACT_MARGIN
-				):
-					continue
-				_motion_contact_cooldown[pair_key] = now
-				var target_bounds := target_shape.world_bounds()
-				var point_on_target := center.clamp(target_bounds.position, target_bounds.end)
-				var point_on_mover := target_bounds.get_center().clamp(
-					moving_bounds.position, moving_bounds.end
-				)
-				var contact_point := (point_on_target + point_on_mover) * 0.5
-				queue_physics_impact(
-					body, target.get_physics_body(), contact_point,
-					rigid.mass * speed * 0.35, speed
-				)
-				hits += 1
 	motion_contact_ms = (Time.get_ticks_usec() - started) / 1000.0
-	motion_contact_tests = tests
-	motion_contact_hits += hits
+	motion_contact_tests = int(scan.tests)
+	motion_contact_hits += int(scan.hits)
 
 
 func get_metrics() -> Dictionary:
@@ -2313,6 +2285,13 @@ func _create_diagnostics() -> void:
 	canvas.layer = 90
 	add_child(canvas)
 	_diagnostics = Label.new()
-	_diagnostics.position = Vector2(12, 42)
+	# El HUD principal usa dos lineas desde y=8. Empezar en 42 superponia exactamente su segunda
+	# linea; se reserva una franja completa y se refuerza el contraste sobre escenas claras.
+	_diagnostics.position = Vector2(12, 68)
 	_diagnostics.add_theme_font_size_override("font_size", 13)
+	_diagnostics.add_theme_color_override("font_color", Color(1.0, 1.0, 1.0, 0.88))
+	_diagnostics.add_theme_color_override("font_shadow_color", Color(0.0, 0.0, 0.0, 0.95))
+	_diagnostics.add_theme_constant_override("shadow_offset_x", 1)
+	_diagnostics.add_theme_constant_override("shadow_offset_y", 1)
+	_diagnostics.add_theme_constant_override("shadow_outline_size", 2)
 	canvas.add_child(_diagnostics)

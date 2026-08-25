@@ -43,9 +43,11 @@ height = 1.8
 
 [sub_resource type="LabelSettings" id="Hud_text"]
 font_size = 15
-font_color = Color(1, 1, 1, 0.75)
-shadow_size = 2
-shadow_color = Color(0, 0, 0, 0.6)
+font_color = Color(1, 1, 1, 0.92)
+outline_size = 1
+outline_color = Color(0, 0, 0, 0.9)
+shadow_size = 3
+shadow_color = Color(0, 0, 0, 0.85)
 
 [sub_resource type="Gradient" id="Pause_vignette_gradient"]
 colors = PackedColorArray(0.025, 0.045, 0.075, 0.72, 0.015, 0.025, 0.045, 0.92)
@@ -197,8 +199,8 @@ vertical_alignment = 1
 anchors_preset = 0
 offset_left = 12.0
 offset_top = 8.0
-offset_right = 460.0
-offset_bottom = 30.0
+offset_right = 760.0
+offset_bottom = 52.0
 label_settings = SubResource("Hud_text")
 
 [node name="Interaction" type="Label" parent="HUD"]

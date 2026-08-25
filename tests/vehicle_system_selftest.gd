@@ -74,6 +74,30 @@ func _run() -> void:
 	_check(vehicle.get_child_count() >= 4, "se crearon los cuatro raycasts de suspension")
 	_check(vehicle.voxel_owner != null and vehicle.voxel_owner.get_physics_body() == vehicle,
 		"la carroceria destructible y el vehiculo comparten una sola verdad fisica")
+	var wheel_visual_body := vehicle.voxel_owner.get_meta(
+		"teardown_vehicle_visual_body"
+	) as VoxelBody3D
+	var wheel_visual_shapes := wheel_visual_body.get_shapes() \
+		if wheel_visual_body != null else [] as Array[VoxelShape3D]
+	_check(wheel_visual_shapes.size() >= 4,
+		"las cuatro ruedas authored conservan sus Shapes visuales")
+	_check(wheel_visual_body != null and world.get_transform_tracked_body_ids().has(
+		wheel_visual_body.get_instance_id()
+	), "el renderer sigue las ruedas aunque su Body auxiliar este congelado")
+	var transform_probe := VoxelTransformTracker.new()
+	var tracked_snapshot := transform_probe.collect(world.get_transform_tracked_body_ids())
+	var tracked_wheel_shapes := 0
+	var initial_wheel_origins := {}
+	for shape_variant: Variant in tracked_snapshot.shapes:
+		if wheel_visual_shapes.has(shape_variant):
+			tracked_wheel_shapes += 1
+			initial_wheel_origins[(shape_variant as VoxelShape3D).get_instance_id()] = (
+				shape_variant as VoxelShape3D
+			).global_position
+	_check(tracked_wheel_shapes == wheel_visual_shapes.size(),
+		"todas las Shapes de rueda llegan al lote nativo de transformadas")
+	_check(vehicle.wheel_visual_faces_outward(),
+		"llantas y tapacubos authored quedan orientados hacia fuera")
 	_check(vehicle.voxel_owner.continuous_collision,
 		"el vehículo conserva la capacidad de CCD contra paredes delgadas")
 	_check(vehicle.voxel_owner.compound_boxes <= VoxelVehicle3D.COLLISION_BOX_BUDGET,
@@ -116,6 +140,18 @@ func _run() -> void:
 	)
 	_check(planar_distance > 0.35,
 		"la suspension transmite la fuerza al suelo (avance %.2f m)" % planar_distance)
+	var moved_snapshot := transform_probe.collect(world.get_transform_tracked_body_ids())
+	var moved_wheel_visuals := 0
+	for index in mini(moved_snapshot.shapes.size(), moved_snapshot.transforms.size()):
+		var moved_shape := moved_snapshot.shapes[index] as VoxelShape3D
+		if moved_shape == null or not initial_wheel_origins.has(moved_shape.get_instance_id()):
+			continue
+		var moved_transform := moved_snapshot.transforms[index] as Transform3D
+		if moved_transform.origin.distance_to(initial_wheel_origins[moved_shape.get_instance_id()]) \
+				> 0.35:
+			moved_wheel_visuals += 1
+	_check(moved_wheel_visuals == wheel_visual_shapes.size(),
+		"los visuales de rueda avanzan con el coche hasta el renderer")
 	var contacts := 0
 	for wheel: Dictionary in vehicle.get_wheel_telemetry():
 		contacts += 1 if bool(wheel.contact) else 0
@@ -266,11 +302,10 @@ func _run() -> void:
 	for _frame in 2:
 		await physics_frame
 	_check(vehicle.is_physics_processing(), "un contacto/despertar reactiva el controlador")
-	var visual_body := vehicle.voxel_owner.get_meta("teardown_vehicle_visual_body") as VoxelBody3D
 	world.unregister_body(vehicle.voxel_owner)
 	vehicle.voxel_owner.queue_free()
 	await process_frame
-	_check(not is_instance_valid(visual_body),
+	_check(not is_instance_valid(wheel_visual_body),
 		"destruir la carrocería limpia también las ruedas visuales")
 	_finish()
 

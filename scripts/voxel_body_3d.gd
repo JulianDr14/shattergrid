@@ -45,6 +45,7 @@ var _handoff_collision_mask := 1
 var _handoff_impulses: Array[Dictionary] = []
 var _vehicle_descriptor := {}
 var _collision_installer := VoxelCollisionInstaller.new()
+var _mass_properties := VoxelMassProperties.new()
 
 const LARGE_BODY_CCD_BOX_THRESHOLD := 20
 const LARGE_BODY_CCD_MASS_THRESHOLD := 2000.0
@@ -192,6 +193,10 @@ func sleep() -> void:
 		(_physics_body as RigidBody3D).sleeping = true
 		if _physics_body is VoxelVehicle3D:
 			(_physics_body as VoxelVehicle3D).park_after_sleep()
+		# Jolt no garantiza `sleeping_state_changed` al asignar la propiedad desde script. Sin esta
+		# notificacion el registro conservaba los 632 props como despiertos, el presupuesto intentaba
+		# simplificarlos y esa reconstruccion los despertaba de verdad unos frames despues.
+		runtime_state_changed.emit(self)
 
 
 ## Despertar explícito para las interacciones que Jolt no ve venir: agarrar un objeto, abrir una
@@ -779,78 +784,16 @@ func _clear_collisions() -> void:
 func _apply_mass_properties() -> void:
 	if not _physics_body is RigidBody3D:
 		return
-	var rigid := _physics_body as RigidBody3D
-	var total_mass := 0.0
-	var weighted_center := Vector3.ZERO
-	var shape_properties: Array[Dictionary] = []
-	for shape in get_shapes():
-		var properties: Dictionary = shape.mass_properties()
-		var shape_mass := float(properties.get("mass", 0.0))
-		var center := shape.transform * (properties.get("center", Vector3.ZERO) as Vector3)
-		total_mass += shape_mass
-		weighted_center += center * shape_mass
-		shape_properties.append({
-			"shape": shape, "mass": shape_mass, "center": center,
-			"inertia": properties.get("inertia", Vector3.ONE),
-		})
-	if total_mass <= 0.0:
-		return
-	var center_of_mass := weighted_center / total_mass
-	# La escena SUV de referencia deja el centro de masa unos 35 cm bajo el centro geométrico. En
-	# un raycast vehicle eso es lo que evita que una carrocería alta vuelque al primer giro; se
-	# conserva X/Z exacto y solo se baja Y, con piso para no esconderlo bajo vehículos muy planos.
-	if rigid is VoxelVehicle3D:
-		center_of_mass.y -= minf(0.35, maxf(0.0, center_of_mass.y - 0.45))
-	var summed_inertia := Vector3.ZERO
-	for entry in shape_properties:
-		var shape := entry.shape as VoxelShape3D
-		var local_inertia := entry.inertia as Vector3
-		var axes := shape.transform.basis.orthonormalized()
-		# Diagonal de R·I·Rᵀ en los ejes del Body. Godot expone una inercia diagonal, así que los
-		# términos cruzados no se pueden entregar, pero rotar la diagonal evita tratar un poste
-		# horizontal como uno vertical.
-		var rotated := Vector3(
-			axes.x.x * axes.x.x * local_inertia.x
-				+ axes.y.x * axes.y.x * local_inertia.y
-				+ axes.z.x * axes.z.x * local_inertia.z,
-			axes.x.y * axes.x.y * local_inertia.x
-				+ axes.y.y * axes.y.y * local_inertia.y
-				+ axes.z.y * axes.z.y * local_inertia.z,
-			axes.x.z * axes.x.z * local_inertia.x
-				+ axes.y.z * axes.y.z * local_inertia.y
-				+ axes.z.z * axes.z.z * local_inertia.z
-		)
-		var offset: Vector3 = (entry.center as Vector3) - center_of_mass
-		var shape_mass := float(entry.mass)
-		rotated += shape_mass * Vector3(
-			offset.y * offset.y + offset.z * offset.z,
-			offset.x * offset.x + offset.z * offset.z,
-			offset.x * offset.x + offset.y * offset.y
-		)
-		summed_inertia += rotated
-	rigid.mass = total_mass
-	rigid.center_of_mass_mode = RigidBody3D.CENTER_OF_MASS_MODE_CUSTOM
-	rigid.center_of_mass = center_of_mass
-	rigid.inertia = summed_inertia.max(Vector3.ONE * 0.0001)
-	if not rigid is VoxelVehicle3D:
-		var damping := structural_damping_for_inertia(rigid.inertia)
-		if damping.y > 0.0:
-			rigid.linear_damp = damping.x
-			rigid.angular_damp = damping.y
+	_mass_properties.apply(
+		_physics_body as RigidBody3D, get_shapes(), _physics_body is VoxelVehicle3D
+	)
 
 
 ## Los postes tienen una inercia diminuta alrededor de su eje largo y enorme alrededor de los otros
 ## dos. Esa anisotropía permite reconocerlos sin tags del mapa y disipar el péndulo de cables/choques
 ## sin amortiguar cajas, vehículos ni cascotes compactos.
 static func structural_damping_for_inertia(body_inertia: Vector3) -> Vector2:
-	var smallest := maxf(0.0001, minf(body_inertia.x, minf(body_inertia.y, body_inertia.z)))
-	var largest := maxf(body_inertia.x, maxf(body_inertia.y, body_inertia.z))
-	var ratio := largest / smallest
-	if ratio >= 8.0:
-		return Vector2(0.36, 3.8)
-	if ratio >= 4.0:
-		return Vector2(0.20, 1.5)
-	return Vector2.ZERO
+	return VoxelMassProperties.damping_for_inertia(body_inertia)
 
 
 func _on_shape_voxels_changed(

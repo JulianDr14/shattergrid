@@ -91,6 +91,14 @@ func configure(owner: VoxelBody3D, descriptor: Dictionary) -> void:
 	if seat_transform != Transform3D.IDENTITY:
 		_seat_local = global_transform.affine_inverse() * seat_transform.origin
 	_create_wheels(descriptor)
+	# Este Body no participa en fisica: solo conserva el ownership de los voxeles de rueda. Marcarlo
+	# explicitamente evita el fallo en que sus Shapes desaparecian del seguimiento al congelarlo.
+	var world := voxel_owner.get_parent() as VoxelWorld3D
+	if world != null and _visual_body != null and is_instance_valid(_visual_body):
+		world.track_external_body_transforms(_visual_body)
+	# Coloca los visuales una vez incluso si el vehiculo se importo ya dormido. Sin este primer pase,
+	# las ruedas quedaban en la transformada authored anterior al recentrado del VehicleBody.
+	_sync_wheel_visuals(true)
 	_create_lights(descriptor.get("lights", []))
 	_retune_for_mass(true)
 	_set_lights(false, false, false)
@@ -133,20 +141,87 @@ func _create_wheels(descriptor: Dictionary) -> void:
 		wheel.wheel_roll_influence = lerpf(0.48, 0.24, antiroll)
 		add_child(wheel)
 		_wheels.append(wheel)
+		# VehicleWheel3D necesita la base del chasis para que traccion/direccion apunten correctamente,
+		# mientras que la Shape puede traer espejo/rotacion authored propios (por ejemplo un tapacubo en
+		# una sola cara). El offset visual se mide contra la pose fisica inicial, no contra el XML: asi
+		# el primer sync es identidad y los cambios posteriores de rueda se aplican como delta.
+		var physical_rest_transform := wheel.global_transform
 		for shape_variant: Variant in visual_shapes:
 			var shape := shape_variant as VoxelShape3D
 			if shape == null or not is_instance_valid(shape):
 				continue
+			_orient_wheel_face_outward(shape, wheel)
 			_wheel_visuals.append({
 				"wheel": wheel,
 				"shape": shape,
-				"local": source_transform.affine_inverse() * shape.global_transform,
+				"local": physical_rest_transform.affine_inverse() * shape.global_transform,
 			})
 	# Algunos mods no escriben `drive`. Un coche sin rueda motriz parece roto aunque su XML solo sea
 	# incompleto; se adopta traccion trasera, sin inventar ruedas ni hacer conducible un `nodrive`.
 	if not _wheels.any(func(candidate: VehicleWheel3D) -> bool: return candidate.use_as_traction):
 		for wheel in _wheels:
 			wheel.use_as_traction = wheel.position.z < 0.0
+
+
+## Los `.vox` de rueda de Teardown suelen modelar llanta/tapacubo solo en una de las dos caras.
+## Los objetos izquierdo y derecho ya vienen espejados en celdas, pero la conversion de ejes puede
+## dejar esa cara mirando al centro del coche. Se elige la cara con mas materiales/detalle y, solo
+## si apunta hacia dentro, se gira el visual 180° alrededor de su Y local. No toca VehicleWheel3D:
+## suspension, traccion y direccion conservan los ejes que espera Jolt.
+func _orient_wheel_face_outward(shape: VoxelShape3D, wheel: VehicleWheel3D) -> void:
+	var detail_face := _wheel_detail_face(shape)
+	if detail_face == 0 or is_zero_approx(wheel.position.x):
+		return
+	var detail_normal := shape.global_basis.x.normalized() * float(detail_face)
+	var outward := global_basis.x.normalized() * signf(wheel.position.x)
+	if detail_normal.dot(outward) >= 0.0:
+		return
+	shape.global_basis = shape.global_basis * Basis(Vector3.UP, PI)
+
+
+## -1: cara x minima; +1: cara x maxima; 0: ambas tienen el mismo detalle.
+static func _wheel_detail_face(shape: VoxelShape3D) -> int:
+	if shape == null or shape.data == null:
+		return 0
+	var dimensions := shape.data.get_dimensions()
+	if dimensions.x <= 0 or dimensions.x >= mini(dimensions.y, dimensions.z):
+		return 0
+	var low_materials := {}
+	var high_materials := {}
+	var low_occupied := 0
+	var high_occupied := 0
+	var cells := shape.data.get_cells()
+	for cell_index in cells.size():
+		var material := int(cells[cell_index])
+		if material == 0:
+			continue
+		var x := cell_index % dimensions.x
+		if x == 0:
+			low_occupied += 1
+			low_materials[material] = true
+		elif x == dimensions.x - 1:
+			high_occupied += 1
+			high_materials[material] = true
+	var low_score := low_materials.size() * 1_000_000 + low_occupied
+	var high_score := high_materials.size() * 1_000_000 + high_occupied
+	return -1 if low_score > high_score else (1 if high_score > low_score else 0)
+
+
+## Auditoria barata de importacion, usada por la regresion del mapa real.
+func wheel_visual_faces_outward() -> bool:
+	for record: Dictionary in _wheel_visuals:
+		var wheel := record.get("wheel") as VehicleWheel3D
+		var shape := record.get("shape") as VoxelShape3D
+		if wheel == null or shape == null:
+			continue
+		var detail_face := _wheel_detail_face(shape)
+		if detail_face == 0:
+			continue
+		var detail_normal := shape.global_basis.x.normalized() * float(detail_face)
+		var outward := global_basis.x.normalized() * signf(wheel.position.x)
+		if detail_normal.dot(outward) < 0.0:
+			return false
+	return true
 
 
 func _create_lights(records: Array) -> void:
@@ -386,7 +461,9 @@ func park_after_sleep() -> void:
 	engine_force = 0.0
 	brake = coast_brake
 	_set_lights(false, false, false)
-	_sync_wheel_visuals()
+	# `sleep()` cambia el estado antes de llamar aqui; se fuerza la ultima pose de suspension para que
+	# el coche no se aparque dejando sus ruedas un tick atras.
+	_sync_wheel_visuals(true)
 	set_physics_process(false)
 
 
@@ -452,7 +529,7 @@ func _wake_attached_bodies() -> void:
 		joints.wake_connected(voxel_owner)
 
 
-func _sync_wheel_visuals() -> void:
+func _sync_wheel_visuals(force := false) -> void:
 	if _wheel_visuals.is_empty():
 		return
 	var moving := has_driver() or _control_override or not sleeping
@@ -460,7 +537,7 @@ func _sync_wheel_visuals() -> void:
 		if _visual_body != null and is_instance_valid(_visual_body) else null
 	if visual_rigid != null:
 		visual_rigid.sleeping = not moving
-	if not moving:
+	if not moving and not force:
 		return
 	for record: Dictionary in _wheel_visuals:
 		# Los visuales pertenecen al Body voxel y pueden salir de forma diferida durante teardown. Un

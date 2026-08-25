@@ -40,6 +40,12 @@ add_library(shattergrid_core SHARED
 	native/src/voxel_support_planner.cpp
 	native/src/voxel_structural_graph.cpp
 	native/src/voxel_damage_planner.cpp
+	native/src/voxel_mass_properties.cpp
+	native/src/voxel_asset_decoder.cpp
+	native/src/voxel_shadow_update_planner.cpp
+	native/src/voxel_motion_damage_scanner.cpp
+	native/src/voxel_map_scene_traversal.cpp
+	native/src/voxel_map_scene_committer.cpp
 )
 
 target_include_directories(shattergrid_core PRIVATE native/include)

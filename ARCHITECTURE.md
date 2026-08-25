@@ -68,19 +68,29 @@ responsabilidad y los adaptadores GDScript conservan únicamente ownership y API
   geométricas siguen usando los índices nativos de `VoxelShapeData`;
 - `VoxelRopeSolver`: buffers Verlet, restricciones, sueño, rotura, tensión, consultas de colisión
   batcheadas y arrays de malla;
-- `VoxelMapImportPlanner`: parseo XML/VOX, transformadas recursivas, límites y clasificación de
-  joints; produce datos, mientras el importador conserva el commit de Nodes;
+- `VoxelMapImportPlanner`: parseo XML/VOX nombrado, límites y clasificación de joints;
+- `VoxelMapSceneTraversal` y `VoxelMapSceneCommitter`: composición recursiva del XML y commit
+  main-thread de Bodies/Shapes, incluida su creación desde los recursos Script, configuración,
+  parenting y conexión con la colisión baked;
+- `VoxelAssetDecoder`: parser MagicaVoxel genérico, grafo `nTRN/nGRP/nSHP`, recorte, expansión,
+  vaciado y anclajes; el adaptador conserva solo sidecars y política de materiales;
 - `VoxelRopePhysicsBridge`: ejecuta los raycasts y aplica fuerzas desde una sola llamada nativa del
   tick físico;
 - `VoxelTransformTracker`: resuelve IDs despiertos, da un frame de gracia al que se duerme y toma
   transformadas interpoladas/bounds para renderer y sombras;
 - `VoxelCollisionInstaller`: crea `CollisionShape3D`, cajas y recursos cóncavos por lote;
+- `VoxelShadowUpdatePlanner`: round-robin, deadband, estado de Shapes, barrido de eliminadas y
+  coalescencia acotada de regiones durante bursts;
+- `VoxelMotionDamageScanner`: censo a 30 Hz, prioridad por energía cinética, cooldown y contacto
+  acotado contra geometría atravesable;
+- `VoxelMassProperties`: masa compuesta, centro, inercia orientada/ejes paralelos y damping;
 - `VoxelSupportPlanner`, `VoxelImpactQueue` y `VoxelCollisionHandoffQueue`: separan planificación
   de soporte y las dos máquinas de estado que antes ocupaban `VoxelWorld3D`.
 
 Los kernels de datos (`VoxelRuntimeRegistry`, `VoxelDamagePlanner`, `VoxelStructuralGraph`,
-`VoxelRopeSolver` y `VoxelMapImportPlanner`) no llaman al SceneTree. Los bridges
-de escena también son `Resource`, pero acceden a Nodes, `PhysicsDirectSpaceState3D` o Jolt y por eso
+`VoxelRopeSolver`, `VoxelAssetDecoder` y `VoxelMapImportPlanner`) no llaman al SceneTree. Los
+bridges de escena —commit, movimiento, sombras, colisión, transformadas y cables— también son
+`Resource`, pero acceden a Nodes, `PhysicsDirectSpaceState3D` o Jolt y por eso
 se invocan exclusivamente desde el hilo principal/physics tick. Esta separación sigue el contrato
 oficial de Godot: el SceneTree activo no es thread-safe y las operaciones directas de GPU pueden
 sincronizar. Jolt ya usa internamente el `WorkerThreadPool`; añadir otro pool alrededor del tick no
@@ -105,8 +115,9 @@ formato de autoría:
 Antes se derivaba la transparencia de la banda física. Eso convertía paredes y piezas metálicas
 del mapa Lee en vidrio, mientras algunos vidrios reales quedaban opacos.
 
-El importador acepta `SIZE`, `XYZI`, `RGBA`, `MATL`, `nTRN`, `nGRP` y `nSHP`, transforma MagicaVoxel
-Z-up a Godot Y-up y admite el sidecar `<asset>.voxel.json`. No reduce los `.vox` en runtime. Los
+`VoxelAssetDecoder` acepta `SIZE`, `XYZI`, `RGBA`, `MATL`, `nTRN`, `nGRP` y `nSHP`, transforma
+MagicaVoxel Z-up a Godot Y-up y el adaptador admite el sidecar `<asset>.voxel.json`. No reduce los
+`.vox` en runtime. Los
 planos heredados de 30 cm se adaptan una sola vez a bloques 3x3x3 de voxeles de 10 cm.
 
 ## Destrucción
@@ -229,7 +240,8 @@ macrocelda sucia. Los fragmentos usan `RigidBody3D` y compuestos de cajas. La de
 nativa prueba paso exacto de 10 cm. Si excede el límite, cada macrocelda reducida recibe el AABB
 ajustado de sus voxeles reales: ya no se rellena todo el cubo de 20/40/80 cm ni se fusionan celdas
 reducidas atravesando aire. Ese relleno era capaz de crear una repisa invisible bajo una torre.
-Masa, centro de masa e inercia se calculan desde densidades y voxeles ocupados. En Bodies con varias
+`VoxelMassProperties` calcula masa, centro de masa e inercia desde densidades y voxeles ocupados.
+En Bodies con varias
 Shapes, la inercia se rota a los ejes del Body y se suma con el teorema de ejes paralelos; sumar solo
 la inercia intrínseca hacía que un poste largo girara como un objeto compacto. Los Bodies dinámicos
 usan `VoxelImpactRigidBody3D` con ocho contactos monitorizados: `_integrate_forces` solo agrega el
