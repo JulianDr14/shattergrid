@@ -7,9 +7,12 @@ extends MultiMeshInstance3D
 const CHIP_CAPACITY := 1536
 const CHIP_LIFETIME := 2.4
 const MAX_IMPACT_CHIPS := 96
-const MAX_IMPACT_DUST := 128
+const MAX_IMPACT_DUST := 224
 const MAX_IMPACT_SPARKS := 32
-const DUST_CAPACITY := 2048
+## El voxel del mapa (`VoxelShape3D.voxel_size`). El humo se dibuja a esta misma medida: un cubo
+## de humo más grande que uno del mundo rompe la escala y canta de inmediato.
+const SMOKE_VOXEL_SIZE := 0.1
+const DUST_CAPACITY := 3072
 const SPARK_CAPACITY := 768
 
 var last_impact_particles := 0
@@ -46,9 +49,12 @@ func _ready() -> void:
 
 ## Emits the bounded samples returned by the native damage operation. The native reservoir has a
 ## hard ceiling of 256 samples, so a huge explosion cannot multiply scripting or particle work.
+## `cause` viene de `VoxelWorld3D.damage_sphere`. Solo una explosión hace humo: un riel de hierro
+## cayendo al suelo levantaba una bocanada como si ardiera, y eso es lo que rompía la lectura de la
+## escena. Todo lo demás son cascotes -cubos de voxel con el color del material- y chispas.
 func emit_damage(
 	shape: VoxelShape3D, result: Dictionary, impulse_center: Vector3,
-	energy: float, radius: float
+	energy: float, radius: float, cause := "impact"
 ) -> int:
 	if multimesh == null or shape == null or shape.palette == null:
 		return 0
@@ -59,8 +65,13 @@ func emit_damage(
 		return 0
 
 	var intensity := clampf(sqrt(float(removed)), 1.0, 24.0)
-	var chip_count := mini(indices.size(), mini(MAX_IMPACT_CHIPS, ceili(intensity * 3.5)))
-	var dust_budget := mini(MAX_IMPACT_DUST, maxi(8, ceili(intensity * 5.0)))
+	var is_explosion := cause == "explosion"
+	# Sin humo que llene el hueco, un impacto necesita más cascote para leerse igual de bien.
+	var chip_rate := 3.5 if is_explosion else 6.0
+	var chip_count := mini(indices.size(), mini(MAX_IMPACT_CHIPS, ceili(intensity * chip_rate)))
+	var dust_budget := 0
+	if is_explosion:
+		dust_budget = mini(MAX_IMPACT_DUST, maxi(14, ceili(intensity * 9.0)))
 	var spark_budget := mini(MAX_IMPACT_SPARKS, maxi(2, ceili(intensity * 1.5)))
 	var emitted := 0
 	var dust_emitted := 0
@@ -104,8 +115,8 @@ func emit_damage(
 			sparks_emitted += 1
 
 	# Sparse surfaces may provide fewer chip samples than the dust budget. Add a compact central
-	# puff so every successful impact reads immediately, even when it removes only a few voxels.
-	while dust_emitted < mini(dust_budget, maxi(10, chip_count * 2)):
+	# puff so every explosion reads immediately, even when it removes only a few voxels.
+	while is_explosion and dust_emitted < mini(dust_budget, maxi(10, chip_count * 2)):
 		var sample_index := dust_emitted % indices.size()
 		var material_index := int(materials[sample_index])
 		var color: Color = palette_colors[material_index] \
@@ -201,13 +212,19 @@ func _emit_dust(
 	world_position: Vector3, outward: Vector3, color: Color, intensity: float
 ) -> void:
 	var dust_color := color.lerp(Color(0.42, 0.40, 0.37, 1.0), 0.38)
-	dust_color.a = _rng.randf_range(0.28, 0.58)
+	# Alfa alto a propósito: con el hash el desvanecido lo hace la rampa descartando píxeles, y
+	# arrancar en 0,28 dejaba el cubo hecho un colador desde el primer frame.
+	dust_color.a = _rng.randf_range(0.8, 1.0)
 	var velocity := outward * _rng.randf_range(0.25, 1.2) \
 		+ Vector3.UP * _rng.randf_range(0.6, 1.8 + intensity * 0.035) \
 		+ _random_unit() * 0.35
-	var particle_scale := _rng.randf_range(0.45, 1.2)
+	# Nace en la rejilla de 10 cm, como cualquier voxel del mapa. Después la turbulencia lo saca de
+	# ella, pero el primer frame de la bocanada es una nube alineada con lo que se acaba de romper.
+	var spawn := (world_position + Vector3(
+		_rng.randfn(0.0, 0.17), _rng.randfn(0.0, 0.13), _rng.randfn(0.0, 0.17)
+	)).snapped(Vector3.ONE * SMOKE_VOXEL_SIZE)
 	_dust.emit_particle(
-		Transform3D(Basis.IDENTITY.scaled(Vector3.ONE * particle_scale), world_position),
+		Transform3D(Basis.IDENTITY, spawn),
 		velocity, dust_color, Color(0, 0, 0, 0),
 		GPUParticles3D.EMIT_FLAG_POSITION | GPUParticles3D.EMIT_FLAG_ROTATION_SCALE \
 			| GPUParticles3D.EMIT_FLAG_VELOCITY | GPUParticles3D.EMIT_FLAG_COLOR
@@ -226,47 +243,59 @@ func _emit_spark(
 	)
 
 
+## El humo eran quads billboard con una textura gaussiana y `SHADING_MODE_UNSHADED`: manchas de
+## aerógrafo, planas, encima de un mundo de cubos, y parpadeando al reordenarse entre ellas.
+## Teardown resuelve su humo dibujándolo opaco y descartando píxeles contra ruido azul en vez de
+## mezclar alfa, y sombreándolo para que el sol lo toque. Aquí la partícula directamente ES un
+## cubo, alineado a los ejes y en múltiplos del voxel (0,1 m), con normales reales -así que el
+## hemisferio falso de Teardown sobra- y `TRANSPARENCY_ALPHA_HASH`, el mismo screen-door, que el
+## FSR2 del proyecto ya resuelve temporalmente.
 func _create_dust_particles() -> GPUParticles3D:
 	var particles := GPUParticles3D.new()
 	particles.amount = DUST_CAPACITY
-	particles.lifetime = 1.65
+	particles.lifetime = 1.9
 	particles.local_coords = false
 	particles.emitting = false
 	particles.fixed_fps = 30
 	particles.visibility_aabb = AABB(Vector3.ONE * -120.0, Vector3.ONE * 240.0)
 	var process := ParticleProcessMaterial.new()
-	process.gravity = Vector3(0.0, 0.35, 0.0)
-	process.damping_min = 1.25
-	process.damping_max = 2.4
-	process.scale_min = 0.55
-	process.scale_max = 1.4
+	process.gravity = Vector3(0.0, 1.4, 0.0)
+	# El drag de antes (1,6-3,2) frenaba la bocanada en medio segundo y los cubos se quedaban
+	# aparcados en el aire el resto de la vida. Ahora siguen subiendo, y la turbulencia -ruido nativo
+	# del ParticleProcessMaterial- les da la deriva que hace que un humo parezca humo y no una rejilla.
+	process.damping_min = 0.35
+	process.damping_max = 0.9
+	process.turbulence_enabled = true
+	process.turbulence_noise_strength = 1.4
+	process.turbulence_noise_scale = 2.6
+	process.turbulence_noise_speed = Vector3(0.35, 0.2, 0.35)
+	process.turbulence_influence_min = 0.15
+	process.turbulence_influence_max = 0.55
+	# Sin variación ni curva de escala: un voxel de humo mide lo que mide un voxel del mapa y punto.
+	# Una bocanada crece porque hay más cubos y se separan, no porque cada cubo se infle.
 	var ramp := Gradient.new()
-	ramp.offsets = PackedFloat32Array([0.0, 0.12, 0.68, 1.0])
+	# El color va a saltos -el humo cambia de tono como cambia un voxel al de al lado- pero el alfa
+	# tiene que bajar continuo: en escalones el hash descartaba un pedazo del cubo de golpe en cada
+	# peldaño y la partícula se iba a trompicones en vez de disolverse.
+	ramp.offsets = PackedFloat32Array([0.0, 0.16, 0.42, 0.68, 0.88, 1.0])
 	ramp.colors = PackedColorArray([
-		Color(1, 1, 1, 0), Color(1, 1, 1, 0.95),
-		Color(0.72, 0.69, 0.64, 0.48), Color(0.55, 0.52, 0.48, 0),
+		Color(1.0, 0.98, 0.94, 1.0), Color(0.84, 0.82, 0.78, 0.9),
+		Color(0.68, 0.66, 0.62, 0.72), Color(0.55, 0.53, 0.5, 0.46),
+		Color(0.46, 0.44, 0.42, 0.2), Color(0.42, 0.4, 0.38, 0.0),
 	])
 	var ramp_texture := GradientTexture1D.new()
 	ramp_texture.gradient = ramp
 	process.color_ramp = ramp_texture
-	var scale_curve := Curve.new()
-	scale_curve.add_point(Vector2(0.0, 0.25))
-	scale_curve.add_point(Vector2(0.35, 1.0))
-	scale_curve.add_point(Vector2(1.0, 1.65))
-	var scale_texture := CurveTexture.new()
-	scale_texture.curve = scale_curve
-	process.scale_curve = scale_texture
 	particles.process_material = process
-	var quad := QuadMesh.new()
-	quad.size = Vector2(0.34, 0.34)
+	var cube := BoxMesh.new()
+	cube.size = Vector3.ONE * SMOKE_VOXEL_SIZE
 	var material := StandardMaterial3D.new()
-	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	material.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_HASH
 	material.vertex_color_use_as_albedo = true
-	material.albedo_texture = _soft_particle_texture(32)
-	quad.material = material
-	particles.draw_pass_1 = quad
+	material.roughness = 1.0
+	material.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
+	cube.material = material
+	particles.draw_pass_1 = cube
 	return particles
 
 
@@ -291,30 +320,20 @@ func _create_spark_particles() -> GPUParticles3D:
 	ramp_texture.gradient = ramp
 	process.color_ramp = ramp_texture
 	particles.process_material = process
-	var streak := QuadMesh.new()
-	streak.size = Vector2(0.018, 0.16)
+	# La chispa era una tira billboard con alfa: en un mundo de cubos se leía como una raya de
+	# Photoshop. Ahora es una brasa -un cubo alineado a los ejes, en la misma rejilla que todo lo
+	# demás pero a media escala de voxel, que es lo que la distingue de un cascote.
+	var ember := BoxMesh.new()
+	ember.size = Vector3.ONE * (SMOKE_VOXEL_SIZE * 0.5)
 	var material := StandardMaterial3D.new()
-	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	material.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
 	material.vertex_color_use_as_albedo = true
 	material.emission_enabled = true
 	material.emission = Color(1.0, 0.45, 0.08)
 	material.emission_energy_multiplier = 2.5
-	streak.material = material
-	particles.draw_pass_1 = streak
+	ember.material = material
+	particles.draw_pass_1 = ember
 	return particles
-
-
-func _soft_particle_texture(size: int) -> ImageTexture:
-	var image := Image.create(size, size, false, Image.FORMAT_RGBA8)
-	for y in size:
-		for x in size:
-			var uv := (Vector2(x, y) + Vector2.ONE * 0.5) / float(size) * 2.0 - Vector2.ONE
-			var alpha := clampf(1.0 - uv.length(), 0.0, 1.0)
-			alpha = alpha * alpha * (3.0 - 2.0 * alpha)
-			image.set_pixel(x, y, Color(1.0, 1.0, 1.0, alpha))
-	return ImageTexture.create_from_image(image)
 
 
 func _process(delta: float) -> void:
@@ -396,7 +415,7 @@ func _flush_chip_buffer() -> void:
 func _track_gpu_batch(dust_count: int, spark_count: int) -> void:
 	if dust_count > 0:
 		_gpu_expiry_batches.append({
-			"count": dust_count, "expires": Time.get_ticks_msec() + 1700,
+			"count": dust_count, "expires": Time.get_ticks_msec() + 1950,
 		})
 	if spark_count > 0:
 		_gpu_expiry_batches.append({

@@ -556,7 +556,9 @@ func damage_sphere(
 		total_removed += int(damage.removed)
 		var particle_started := Time.get_ticks_usec()
 		if impact_particles_enabled and bool(options.get("particles", true)):
-			impact_particles += _particle_pool.emit_damage(shape, damage, center, energy, radius)
+			impact_particles += _particle_pool.emit_damage(
+				shape, damage, center, energy, radius, String(options.get("cause", "impact"))
+			)
 		damage_particles_ms += (Time.get_ticks_usec() - particle_started) / 1000.0
 		var split_started := Time.get_ticks_usec()
 		var created: Array[VoxelBody3D] = []

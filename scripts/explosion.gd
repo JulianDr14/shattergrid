@@ -9,4 +9,5 @@ static func at(node: Node, center: Vector3, radius: float, energy: float) -> voi
 	var tree := node.get_tree()
 	var worlds := tree.get_nodes_in_group(VoxelWorld3D.GROUP)
 	for world: VoxelWorld3D in worlds:
-		world.damage_sphere(center, radius, energy)
+		# El humo es exclusivo de la explosión: `VoxelParticlePool` lo decide por esta causa.
+		world.damage_sphere(center, radius, energy, {"cause": "explosion"})

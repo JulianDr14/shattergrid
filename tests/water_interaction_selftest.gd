@@ -51,13 +51,6 @@ func _make_prop(world: VoxelWorld3D) -> VoxelBody3D:
 
 func _run() -> void:
 	print("interacción con agua")
-	var vehicle_weight := 1500.0 * 9.8
-	_check(VoxelWaterSystem.buoyancy_force_newtons(20.0, 1500.0, 9.8, true) \
-			< vehicle_weight,
-		"una carrocería abierta conserva peso descendente aun totalmente sumergida")
-	_check(is_equal_approx(
-		VoxelWaterSystem.buoyancy_force_newtons(0.001, 10.0, 9.8, false), 9.8
-	), "la flotación normal depende del volumen de agua desplazado, no del peso del Body")
 	var world := VoxelWorld3D.new()
 	world.show_diagnostics = false
 	root.add_child(world)
@@ -66,13 +59,22 @@ func _run() -> void:
 	var prop := _make_prop(world)
 	var rigid := prop.get_physics_body() as RigidBody3D
 	rigid.sleeping = false
+	# El volumen tiene 10 m de calado: el objeto se hunde y, una vez lo atraviesa, vuelve a caer
+	# libre porque debajo no hay lecho. Lo que se mide es el tramo dentro del agua.
 	var minimum_y := INF
+	var maximum_speed_inside := 0.0
 	for _frame in 240:
 		await physics_frame
-		minimum_y = minf(minimum_y, prop.get_shapes()[0].world_bounds().get_center().y)
+		var center_y := prop.get_shapes()[0].world_bounds().get_center().y
+		minimum_y = minf(minimum_y, center_y)
+		if center_y > -9.0:
+			maximum_speed_inside = maxf(maximum_speed_inside, rigid.linear_velocity.length())
 	_check(water.splash_count >= 1, "un objeto que entra genera splash y onda")
-	_check(minimum_y > -4.0 and rigid.linear_velocity.length() < 4.0,
-		"flotación y drag frenan el objeto dentro del volumen")
+	_check(minimum_y < -1.0, "un objeto que cae al agua se hunde, no hace corcho")
+	# En caída libre esos 12 m darían ~15 m/s al salir del volumen; el drag lo deja en ~7,3, o sea
+	# entra al agua y deja de acelerar.
+	_check(maximum_speed_inside < 9.0,
+		"el drag frena la caída mientras el objeto está dentro del volumen")
 
 	# El jugador empieza sumergido y cayendo. Sin natación estaría a -6 m tras un segundo; el
 	# controlador lo lleva al objetivo de superficie (origen ≈ -1,15 m, cámara fuera del agua).

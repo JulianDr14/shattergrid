@@ -14,13 +14,10 @@ const GROUP := "voxel_water"
 const SHORE_WIDTH := 0.48
 const RIPPLE_CAPACITY := 24
 const WATER_PHYSICS_INTERVAL := 1.0 / 30.0
-const MAX_SPLASH_DROPS := 36
-const WATER_DENSITY_KG_M3 := 1000.0
-const MAX_BUOYANCY_WEIGHT_RATIO := 2.0
-## Los vehículos voxel son carrocerías abiertas: al entrar agua no desplazan para siempre toda su
-## caja exterior como un casco sellado. El tope garantiza que incluso completamente sumergidos
-## conserven peso descendente; props ligeros y madera siguen usando Arquímedes sin este límite.
-const VEHICLE_MAX_BUOYANCY_WEIGHT_RATIO := 0.55
+## Cada gota es un cubo de media escala de voxel, así que un chapuzón se lee por cantidad de
+## gotas y no por el tamaño de cada una — igual que el humo en `VoxelParticlePool`.
+const SPLASH_DROP_SIZE := 0.05
+const MAX_SPLASH_DROPS := 72
 
 var _vertices := PackedVector3Array()
 var _normals := PackedVector3Array()
@@ -232,44 +229,30 @@ func _apply_body_water(body: VoxelBody3D, delta: float) -> void:
 			clampf(sqrt(maxf(rigid.mass, 1.0)) * rigid.linear_velocity.length() * 0.055, 0.4, 5.0)
 		)
 	_body_wet[key] = true
-	var gravity := float(ProjectSettings.get_setting("physics/3d/default_gravity", 9.8))
-	var submerged_height := minf(maxf(surface_y - bottom, 0.0), bounds.size.y)
-	var displaced_volume := maxf(0.0, bounds.size.x * bounds.size.z * submerged_height)
-	var buoyancy := buoyancy_force_newtons(
-		displaced_volume, rigid.mass, gravity, rigid is VoxelVehicle3D
-	)
-	rigid.apply_central_impulse(Vector3.UP * buoyancy * delta)
+	# Nada flota salvo el jugador, que nada por su cuenta en `player.gd`. Arquímedes sobre la caja
+	# exterior dejaba los escombros y las cajas haciendo corcho en la superficie del mapa entero:
+	# aquí un Body que cae al agua se hunde, y solo el drag le quita la velocidad de caída.
 	var velocity := rigid.linear_velocity
 	var drag_fraction := minf(0.82, submerged * delta * (1.4 + velocity.length() * 0.22))
 	rigid.apply_central_impulse(-velocity * rigid.mass * drag_fraction)
-
-
-static func buoyancy_force_newtons(
-	displaced_volume: float, body_mass: float, gravity: float, is_vehicle: bool
-) -> float:
-	var force := maxf(0.0, displaced_volume) * WATER_DENSITY_KG_M3 * maxf(0.0, gravity)
-	var weight := maxf(0.0, body_mass) * maxf(0.0, gravity)
-	force = minf(
-		force,
-		weight * (VEHICLE_MAX_BUOYANCY_WEIGHT_RATIO if is_vehicle \
-			else MAX_BUOYANCY_WEIGHT_RATIO)
-	)
-	return force
 
 
 func emit_splash(position: Vector3, intensity := 1.0) -> void:
 	if _splash_particles == null or _ripple_mesh == null:
 		return
 	var strength := clampf(float(intensity), 0.2, 5.0)
-	var drops := clampi(ceili(8.0 + strength * 5.5), 8, MAX_SPLASH_DROPS)
+	var drops := clampi(ceili(16.0 + strength * 11.0), 16, MAX_SPLASH_DROPS)
 	for _drop in drops:
 		var angle := _rng.randf_range(0.0, TAU)
 		var horizontal := Vector3(cos(angle), 0.0, sin(angle))
 		var velocity := horizontal * _rng.randf_range(0.25, 1.1 + strength * 0.24) \
 			+ Vector3.UP * _rng.randf_range(1.4, 3.2 + strength * 0.48)
+		# Alineada a la rejilla de la gota, como cualquier cubo del mundo.
+		var spawn := (position + horizontal * _rng.randf_range(0.0, 0.22)) \
+			.snapped(Vector3.ONE * SPLASH_DROP_SIZE)
 		_splash_particles.emit_particle(
-			Transform3D(Basis.IDENTITY, position + horizontal * _rng.randf_range(0.0, 0.18)),
-			velocity, Color(0.68, 0.84, 0.86, 0.9), Color(0, 0, 0, 0),
+			Transform3D(Basis.IDENTITY, spawn),
+			velocity, Color(0.74, 0.88, 0.9, 1.0), Color(0, 0, 0, 0),
 			GPUParticles3D.EMIT_FLAG_POSITION | GPUParticles3D.EMIT_FLAG_VELOCITY \
 				| GPUParticles3D.EMIT_FLAG_COLOR
 		)
@@ -410,7 +393,7 @@ func _hide_ripple(index: int) -> void:
 func _setup_splash_particles() -> void:
 	_splash_particles = GPUParticles3D.new()
 	_splash_particles.name = "WaterSplashes"
-	_splash_particles.amount = 512
+	_splash_particles.amount = 1024
 	_splash_particles.lifetime = 1.25
 	_splash_particles.local_coords = false
 	_splash_particles.emitting = false
@@ -420,16 +403,27 @@ func _setup_splash_particles() -> void:
 	process.gravity = Vector3(0.0, -9.8, 0.0)
 	process.damping_min = 0.1
 	process.damping_max = 0.35
-	process.scale_min = 0.55
-	process.scale_max = 1.25
+	# Sin variación de escala: una gota mide lo que mide una gota, como un voxel mide un voxel.
+	var ramp := Gradient.new()
+	ramp.offsets = PackedFloat32Array([0.0, 0.14, 0.82, 1.0])
+	ramp.colors = PackedColorArray([
+		Color(1.0, 1.0, 1.0, 1.0), Color(0.82, 0.93, 0.95, 1.0),
+		Color(0.6, 0.8, 0.84, 0.85), Color(0.5, 0.72, 0.78, 0.0),
+	])
+	var ramp_texture := GradientTexture1D.new()
+	ramp_texture.gradient = ramp
+	process.color_ramp = ramp_texture
 	_splash_particles.process_material = process
-	var droplet := QuadMesh.new()
-	droplet.size = Vector2(0.055, 0.095)
+	# Gotas billboard con alfa mezclado sobre un mundo de cubos: se veían como recortes planos y se
+	# reordenaban entre ellas. Ahora son cubos con normales, sombreados por la misma luz que el mapa,
+	# y se disuelven con el screen-door hasheado en vez de fundirse a nada.
+	var droplet := BoxMesh.new()
+	droplet.size = Vector3.ONE * SPLASH_DROP_SIZE
 	var material := StandardMaterial3D.new()
-	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	material.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
-	material.albedo_color = Color(0.68, 0.84, 0.86, 0.82)
+	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_HASH
+	material.vertex_color_use_as_albedo = true
+	material.roughness = 0.12
+	material.metallic = 0.0
 	droplet.material = material
 	_splash_particles.draw_pass_1 = droplet
 	add_child(_splash_particles)
