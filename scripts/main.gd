@@ -9,7 +9,10 @@ extends Node3D
 ## `user://`; las siguientes restauran la región inicial y precargan el resto por cercanía.
 ## `--teardown-radius=<metros>` sigue estando para volver a recortar cuando haga falta medir algo.
 const TEARDOWN_MAP_RADIUS := INF
+const LoadingScreenScene := preload("res://scripts/loading_screen.gd")
 const TEARDOWN_NOTICE := "ESTO ES PROPIEDAD DE TUXEDO LABS — solo investigación, no distribuir"
+
+var _loading: Node
 
 @onready var _counter: Label = $HUD/Counter
 @onready var _voxel_world: VoxelWorld3D = $VoxelWorld
@@ -58,7 +61,6 @@ var _benchmark_physics_pairs := PackedFloat64Array()
 var _benchmark_physics_islands := PackedFloat64Array()
 var _benchmark_frame := 0
 var _walk_frame_times := PackedFloat64Array()
-var _walk_scroll_times := PackedFloat64Array()
 var _walk_upload_bytes := PackedFloat64Array()
 var _walk_allocate_times := PackedFloat64Array()
 var _walk_raster_times := PackedFloat64Array()
@@ -93,11 +95,12 @@ func _ready() -> void:
 	# Sin esto `trace_sun_shadow` devuelve 1.0 siempre y no hay una sola sombra en pantalla. Es la
 	# misma idea que usa Teardown: trazar el rayo al sol contra un volumen de bits del mundo con
 	# mips, no un shadow map. Llenar ese volumen costaba 201 s en el mapa entero cuando lo hacía
-	# GDScript voxel a voxel; en C++ y con las macroceldas son 2,7 s, medidos en
-	# `tests/clipmap_raster_selftest.gd`. Eso y 134 MB es lo que cuesta, y se paga al cargar.
+	# GDScript voxel a voxel; en C++ y con las macroceldas la rasterización pura son 2,9 s
+	# (`tests/clipmap_raster_selftest.gd`); repartida entre los cuatro niveles y con los bytes como
+	# datos iniciales de la textura, en la escena real son ~2,6 s. Eso y 134 MB cuesta al cargar.
 	_voxel_world.renderer_settings.sun_shadows_enabled = \
 		not "--no-voxel-sun-shadows" in OS.get_cmdline_user_args()
-	if not _load_teardown_map():
+	if not await _load_teardown_map():
 		# Calle en el eje z con el jugador entrando por el sur. Las fachadas miden 12,8 m, así que
 		# los 28 m entre aceras dejan una calzada de ancho creíble en vez de casas pegadas.
 		for placement: Array in [
@@ -115,8 +118,17 @@ func _ready() -> void:
 	_voxel_renderer = VoxelRenderSystem.new()
 	_voxel_renderer.name = "VoxelRenderSystem"
 	add_child(_voxel_renderer)
-	if not _voxel_renderer.setup(_voxel_world, $Player/Camera3D):
+	var renderer_started := false
+	if _loading != null:
+		_loading.set_range(0.30, 1.0)
+		renderer_started = await _voxel_renderer.setup_progressive(
+			_voxel_world, $Player/Camera3D, _loading.report
+		)
+	else:
+		renderer_started = _voxel_renderer.setup(_voxel_world, $Player/Camera3D)
+	if not renderer_started:
 		push_error("No se pudo iniciar el renderer DDA dedicado")
+	_close_loading_screen()
 	# El renderer nace después de importar el mapa, así que la iluminación leída del cielo se guarda
 	# y se entrega aquí. Sin mapa no se toca nada y el efecto conserva sus valores por defecto.
 	if _sun_direction != Vector3.INF:
@@ -174,6 +186,17 @@ func _ready() -> void:
 ## importación. Si no existe el recurso opcional, se conserva el escenario incluido.
 
 
+## La pantalla tapa el arranque entero: importar el mapa y montar el renderer. Hasta aquí el árbol
+## estaba en pausa y la cámara apagada para que los frames cedidos no repintasen un mundo a medias.
+func _close_loading_screen() -> void:
+	if _loading == null:
+		return
+	$Player/Camera3D.current = true
+	get_tree().paused = false
+	_loading.queue_free()
+	_loading = null
+
+
 func _load_teardown_map() -> bool:
 	var path := VoxelProjectPaths.teardown_map_path()
 	var radius := TEARDOWN_MAP_RADIUS
@@ -190,8 +213,18 @@ func _load_teardown_map() -> bool:
 	if path.is_empty() or not FileAccess.file_exists(path):
 		return false
 	var started := Time.get_ticks_msec()
-	var report := TeardownMapImporter.import_map(
-		_voxel_world, path, Vector3.INF, radius, Vector3.ZERO, collision
+	# La importación bloquea el hilo principal durante segundos. La pantalla se dibuja en los frames
+	# que el importador cede entre etapas; el árbol se pausa para que nada simule con el mapa a
+	# medias, y la cámara se apaga para que esos frames no repinten el mundo a medio construir.
+	_loading = LoadingScreenScene.new()
+	add_child(_loading)
+	get_tree().paused = true
+	$Player/Camera3D.current = false
+	await get_tree().process_frame
+	# El importador es un tercio del arranque; el resto es el renderer, y lo reparte `_ready`.
+	_loading.set_range(0.0, 0.30)
+	var report := await TeardownMapImporter.import_map_progressive(
+		_voxel_world, path, _loading.report, Vector3.INF, radius, Vector3.ZERO, collision
 	)
 	if report.is_empty():
 		return false
@@ -595,13 +628,12 @@ func _process(delta: float) -> void:
 		var rid := get_viewport().get_viewport_rid()
 		var clip := _voxel_renderer.shadow_clipmaps if _voxel_renderer != null else null
 		var vw := _voxel_world
-		print(("PERF fps=%.0f gpu=%.2f cpu_render=%.2f | clipmap scroll=%.2f raster=%.2f subir=%.2f"
+		print(("PERF fps=%.0f gpu=%.2f cpu_render=%.2f | clipmap raster=%.2f subir=%.2f"
 			+ " dinamico=%.2f | despiertos=%d cables=%d/%d") % [
 			Engine.get_frames_per_second(),
 			RenderingServer.viewport_get_measured_render_time_gpu(rid),
 			RenderingServer.viewport_get_measured_render_time_cpu(rid)
 				+ RenderingServer.get_frame_setup_time_cpu(),
-			clip.last_scroll_update_ms if clip != null else 0.0,
 			clip.last_region_raster_ms if clip != null else 0.0,
 			clip.last_region_upload_ms if clip != null else 0.0,
 			clip.last_dynamic_update_ms if clip != null else 0.0,
@@ -650,7 +682,6 @@ func _process(delta: float) -> void:
 		if _benchmark_frame >= 60 and _benchmark_frame < 360:
 			$Player.global_position.x += 0.08
 			_walk_frame_times.append(delta * 1000.0)
-			_walk_scroll_times.append(_voxel_renderer.shadow_clipmaps.last_scroll_update_ms)
 			_walk_upload_bytes.append(_voxel_renderer.shadow_clipmaps.last_upload_bytes)
 			_walk_allocate_times.append(_voxel_renderer.shadow_clipmaps.last_region_allocate_ms)
 			_walk_raster_times.append(_voxel_renderer.shadow_clipmaps.last_region_raster_ms)
@@ -807,8 +838,6 @@ func _finish_walk_benchmark() -> void:
 		"frame_median_ms": snappedf(_percentile(_walk_frame_times, 0.5), 0.001),
 		"frame_p95_ms": snappedf(_percentile(_walk_frame_times, 0.95), 0.001),
 		"frame_max_ms": snappedf(_percentile(_walk_frame_times, 1.0), 0.001),
-		"scroll_p95_ms": snappedf(_percentile(_walk_scroll_times, 0.95), 0.001),
-		"scroll_max_ms": snappedf(_percentile(_walk_scroll_times, 1.0), 0.001),
 		"upload_p95_bytes": int(_percentile(_walk_upload_bytes, 0.95)),
 		"allocate_p95_ms": snappedf(_percentile(_walk_allocate_times, 0.95), 0.001),
 		"raster_p95_ms": snappedf(_percentile(_walk_raster_times, 0.95), 0.001),
@@ -945,24 +974,16 @@ func _on_voxel_impact(_center: Vector3, removed_voxels: int, _radius: float) -> 
 
 func _test_clipmaps() -> void:
 	var clipmaps := _voxel_renderer.shadow_clipmaps
-	var camera: Camera3D = $Player/Camera3D
-	# One metre crosses a snapped 8-cell boundary in L0 without replacing any full volume.
-	camera.global_position += Vector3(1.0, 0.0, 0.0)
 	for _frame in 3:
 		await get_tree().process_frame
-	var scroll_bytes := clipmaps.last_scroll_upload_bytes
 	var first_body := get_tree().get_nodes_in_group(VoxelBody3D.GROUP)[0] as VoxelBody3D
 	var first_shape := first_body.get_shapes()[0]
 	var live := first_shape.data.get_live_indices()
 	var damage_center := first_shape.voxel_center_world(live[live.size() / 2])
 	_voxel_world.damage_sphere(damage_center, 0.25, 20.0)
 	var damage_bytes := clipmaps.last_damage_upload_bytes
-	var passed := (scroll_bytes > 0 or clipmaps.last_scroll_elided_regions > 0) \
-		and scroll_bytes < clipmaps.total_memory_bytes \
-		and damage_bytes > 0 and damage_bytes < clipmaps.total_memory_bytes
+	var passed := damage_bytes > 0 and damage_bytes < clipmaps.total_memory_bytes
 	print("VOXEL_CLIPMAP_TEST_RESULT ", JSON.stringify({
-		"scroll_upload_bytes": scroll_bytes,
-		"scroll_elided_regions": clipmaps.last_scroll_elided_regions,
 		"damage_upload_bytes": damage_bytes,
 		"full_memory_bytes": clipmaps.total_memory_bytes,
 		"pass": passed,

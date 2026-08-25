@@ -42,11 +42,8 @@ const SHADOW_DEADBAND_SQ := 0.01
 const SWEEP_EVERY_FRAMES := 15
 
 var last_upload_bytes := 0
-var last_scroll_upload_bytes := 0
-var last_scroll_elided_regions := 0
 var last_damage_upload_bytes := 0
 var last_dynamic_update_ms := 0.0
-var last_scroll_update_ms := 0.0
 var last_region_allocate_ms := 0.0
 var last_region_raster_ms := 0.0
 var last_region_upload_ms := 0.0
@@ -78,25 +75,59 @@ var _pending_damage_regions: Array = []
 var _damage_level_cursor := 1
 
 
+## Rasterizar los cuatro niveles del mapa entero son ~21 s de C++ en el hilo principal. Con una
+## pantalla de carga escuchando se usa `setup_progressive`, que cede un frame entre niveles para que
+## algo se dibuje; sin ella `setup` sigue siendo una llamada normal y no cede nada.
 func setup(voxel_world: VoxelWorld3D, camera: Camera3D) -> bool:
+	# A través del `Callable` porque el analizador exige `await` ante cualquier corrutina, y sin
+	# pantalla `_setup` nunca se suspende. Mismo motivo que en `TeardownMapImporter.import_map`.
+	var result: Variant = _setup.call(voxel_world, camera, Callable())
+	if result is bool:
+		return result
+	push_error("VoxelShadowClipmaps: el arranque sin pantalla de carga se suspendió")
+	return false
+
+
+func setup_progressive(
+	voxel_world: VoxelWorld3D, camera: Camera3D, progress: Callable
+) -> bool:
+	return await _setup(voxel_world, camera, progress)
+
+
+func _setup(voxel_world: VoxelWorld3D, camera: Camera3D, progress: Callable) -> bool:
 	_world = voxel_world
 	_camera = camera
 	if not _measure_volume():
 		return false
 	total_memory_bytes = 0
+	# Se rasteriza antes de crear la textura y esos bytes son los datos iniciales del
+	# `texture_create`. Crearla vacia y subirla despues costaba 16,7 s de los 21 s del arranque:
+	# `update_region` extrae la region sucia byte a byte en GDScript —y aqui la region sucia es el
+	# volumen entero, 155 MB en el nivel 0—, la vuelve a copiar para redondear a potencia de dos, y
+	# remata con un buffer de staging del mismo tamano. Todo para llegar a los mismos bytes.
+	var group := _shape_group()
+	if progress.is_valid():
+		progress.call(0.0, "Trazando el volumen de sombras…  %d niveles" % LEVELS)
+		await Engine.get_main_loop().process_frame
+	# Los cuatro niveles son independientes: leen las mismas Shapes sin tocarlas y cada uno escribe
+	# su propio buffer. En serie son 4,7 s del arranque; repartidos, lo que tarde el mas gordo.
+	var layers: Array[PackedByteArray] = []
+	layers.resize(LEVELS)
+	var task := WorkerThreadPool.add_group_task(
+		_rasterize_into.bind(group, layers), LEVELS, LEVELS, true, "voxel_shadow_clipmaps"
+	)
+	WorkerThreadPool.wait_for_group_task_completion(task)
 	for level in LEVELS:
-		var packed := _packed_sizes[level]
 		# La copia en CPU solo hace falta para crear la textura: despues nadie la lee, y en el nivel 0
-		# son 133 MB de RAM que no pintan nada. Se deja morir al salir del bucle.
-		var layer := PackedByteArray()
-		layer.resize(packed.x * packed.y * packed.z)
+		# son 155 MB de RAM que no pintan nada. Se sueltan al salir del bucle.
 		var texture := VoxelAtlas3D.new()
-		if not texture.create(packed, layer, true):
+		if not texture.create(_packed_sizes[level], layers[level], true):
 			return false
 		_textures.append(texture)
-		total_memory_bytes += layer.size()
+		total_memory_bytes += layers[level].size()
 		_pending_damage_regions.append([] as Array[AABB])
-	_rebuild_all()
+	layers.clear()
+	_track_shapes()
 	_world.voxels_changed.connect(_on_voxels_changed)
 	set_process(true)
 	return true
@@ -205,7 +236,6 @@ func _exit_tree() -> void:
 func _process(_delta: float) -> void:
 	# El volumen es fijo: aqui ya no se desplaza nada. Solo se atiende lo que cambia.
 	last_upload_bytes = 0
-	last_scroll_update_ms = 0.0
 	last_region_allocate_ms = 0.0
 	last_region_raster_ms = 0.0
 	last_region_upload_ms = 0.0
@@ -213,13 +243,7 @@ func _process(_delta: float) -> void:
 	_update_dynamic_shapes()
 
 
-func _rebuild_all() -> void:
-	var group := _shape_group()
-	for level in LEVELS:
-		var packed := _rasterize_level(group, level)
-		_textures[level].update_region(
-			packed, Vector3i.ZERO, _packed_sizes[level] - Vector3i.ONE
-		)
+func _track_shapes() -> void:
 	var tracked_shapes: Array = []
 	var tracked_bounds: Array = []
 	var tracked_dynamic: Array = []
@@ -243,6 +267,10 @@ func _shape_group() -> Dictionary:
 		group.transforms.append(shape.global_transform)
 		group.voxel_sizes.append(shape.voxel_size)
 	return group
+
+
+func _rasterize_into(level: int, group: Dictionary, layers: Array) -> void:
+	layers[level] = _rasterize_level(group, level)
 
 
 ## Rellena un nivel entero en C++. En GDScript esto era un bucle por voxel vivo y por nivel: 79,3 M
@@ -401,7 +429,11 @@ const MERGE_MAX_SIDE := 8.0
 
 
 func _coalesce(regions: Array[AABB]) -> Array[AABB]:
-	return _update_planner.coalesce(regions, MERGE_MAX_SIDE)
+	# El planificador nativo devuelve un `Array` suelto: guardarlo tal cual dejaba el hueco sin tipo
+	# y el siguiente `_flush_pending_damage_level` reventaba al releerlo.
+	var merged: Array[AABB] = []
+	merged.assign(_update_planner.coalesce(regions, MERGE_MAX_SIDE))
+	return merged
 
 
 func _cell_size(level: int) -> float:

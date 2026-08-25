@@ -206,14 +206,14 @@ bool VoxelShapeData::set_cells(const Vector3i &p_dimensions, const PackedByteArr
 bool VoxelShapeData::set_cells_from_xyzi(const Vector3i &p_source_size, const PackedByteArray &p_xyzi) {
     const Vector3i target(p_source_size.x, p_source_size.z, p_source_size.y);
     const int64_t expected = static_cast<int64_t>(target.x) * target.y * target.z;
-    if (target.x <= 0 || target.y <= 0 || target.z <= 0 || expected > (1 << 28)) {
+    // El tope es el mismo que impone `configure()`: por debajo de él `cells` y `macro_occupancy`
+    // quedan garantizadamente dimensionadas y a cero, y el bucle puede escribir directo.
+    if (target.x <= 0 || target.y <= 0 || target.z <= 0 || expected > 512LL * 512LL * 512LL) {
         return false;
     }
     configure(target);
-    cells.resize(expected);
     uint8_t *write = cells.ptrw();
-    memset(write, AIR, static_cast<size_t>(expected));
-    occupied_count = 0;
+    uint8_t *macros = macro_occupancy.ptrw();
     const uint8_t *read = p_xyzi.ptr();
     const int64_t voxels = p_xyzi.size() / 4;
     for (int64_t v = 0; v < voxels; ++v) {
@@ -224,7 +224,8 @@ bool VoxelShapeData::set_cells_from_xyzi(const Vector3i &p_source_size, const Pa
         if (i >= p_source_size.x || j >= p_source_size.y || k >= p_source_size.z || entry[3] == AIR) {
             continue;
         }
-        const int index = index_of(i, k, p_source_size.y - 1 - j);
+        const int z = p_source_size.y - 1 - j;
+        const int index = index_of(i, k, z);
         if (write[index] == AIR) {
             ++occupied_count;
         } else {
@@ -232,8 +233,10 @@ bool VoxelShapeData::set_cells_from_xyzi(const Vector3i &p_source_size, const Pa
         }
         write[index] = entry[3];
         ++material_counts[entry[3]];
+        // La ocupación de la macrocelda se conoce aquí mismo. `rebuild_macrocells()` rebarría la
+        // rejilla densa entera para deducir lo mismo: 453 M de celdas por mapa, 2,2 s de carga.
+        macros[macro_index_of(i / MACRO_SIZE, k / MACRO_SIZE, z / MACRO_SIZE)] = 1;
     }
-    rebuild_macrocells();
     return true;
 }
 
@@ -348,13 +351,20 @@ PackedByteArray VoxelShapeData::get_cells() const {
 }
 
 PackedByteArray VoxelShapeData::get_used_materials() const {
-    PackedByteArray used;
-    used.resize(256);
-    for (int i = 0; i < cells.size(); ++i) {
-        used.set(cells[i], 1);
+    // El barrido es la rejilla densa entera -453 M de celdas en el mapa de Teardown- y se hacia
+    // celda a celda con PackedByteArray::set: 4,9 s del arranque. Con el puntero crudo y una tabla
+    // local es una lectura secuencial y la copia final son 256 bytes.
+    uint8_t seen[256] = {0};
+    const uint8_t *source = cells.ptr();
+    const int64_t count = cells.size();
+    for (int64_t i = 0; i < count; ++i) {
+        seen[source[i]] = 1;
     }
     // Air is representation, not a material used by the Shape.
-    used.set(AIR, 0);
+    seen[AIR] = 0;
+    PackedByteArray used;
+    used.resize(256);
+    memcpy(used.ptrw(), seen, 256);
     return used;
 }
 

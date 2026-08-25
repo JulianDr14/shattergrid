@@ -68,7 +68,25 @@ var _transform_tracker := VoxelTransformTracker.new()
 var _movable_transforms := {}
 
 
+## El arranque del renderer son ~3,6 s con el mapa entero (atlas ~1 s, volumen de sombras ~2,6 s), y
+## ocurre después de importar. `setup_progressive` reparte ese tramo en la pantalla de carga;
+## `setup` sigue siendo la llamada de siempre para los bancos de pruebas.
 func setup(voxel_world: VoxelWorld3D, camera: Camera3D) -> bool:
+	# Vía `Callable` para que el analizador no exija `await`: sin pantalla `_setup` no se suspende.
+	var result: Variant = _setup.call(voxel_world, camera, Callable())
+	if result is bool:
+		return result
+	push_error("VoxelRenderSystem: el arranque sin pantalla de carga se suspendió")
+	return false
+
+
+func setup_progressive(
+	voxel_world: VoxelWorld3D, camera: Camera3D, progress: Callable
+) -> bool:
+	return await _setup(voxel_world, camera, progress)
+
+
+func _setup(voxel_world: VoxelWorld3D, camera: Camera3D, progress: Callable) -> bool:
 	world = voxel_world
 	_camera = camera
 	effect = DedicatedVoxelDDAEffect.new()
@@ -88,13 +106,24 @@ func setup(voxel_world: VoxelWorld3D, camera: Camera3D) -> bool:
 	# hojas reciclables y mantienen la reserva corta para no aumentar su recorrido por píxel.
 	_reserved_entry_headroom = SMALL_MAP_INITIAL_ENTRY_HEADROOM \
 		if _shapes.size() <= SMALL_MAP_SHAPE_THRESHOLD else FRAGMENT_ENTRY_HEADROOM
+	if progress.is_valid():
+		progress.call(0.0, "Construyendo el atlas de voxeles…")
+		await Engine.get_main_loop().process_frame
 	if not _rebuild_atlases():
 		return false
 	shadow_clipmaps = VoxelShadowClipmaps.new()
 	shadow_clipmaps.name = "VoxelShadowClipmaps"
 	add_child(shadow_clipmaps)
 	if world.renderer_settings.sun_shadows_enabled:
-		if not shadow_clipmaps.setup(world, camera):
+		# El tramo de sombras es el grueso del arranque: se le da del 20 % al 97 % de la barra.
+		var shadows := func(fraction: float, label: String) -> void:
+			progress.call(0.20 + 0.77 * fraction, label)
+		var started := false
+		if progress.is_valid():
+			started = await shadow_clipmaps.setup_progressive(world, camera, shadows)
+		else:
+			started = shadow_clipmaps.setup(world, camera)
+		if not started:
 			return false
 		effect.configure_shadow_clipmaps(
 			shadow_clipmaps.get_static_rids(),
@@ -112,6 +141,8 @@ func setup(voxel_world: VoxelWorld3D, camera: Camera3D) -> bool:
 	local_shadow_pool.setup(world, camera)
 	local_shadow_pool.volumes_changed.connect(effect.configure_local_shadow_volumes)
 	effect.configure_local_shadow_volumes([], local_shadow_pool.get_shader_metadata())
+	if progress.is_valid():
+		progress.call(1.0, "Listo")
 	return true
 
 

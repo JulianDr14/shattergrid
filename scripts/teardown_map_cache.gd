@@ -61,7 +61,7 @@ static func source_signature(xml_path: String) -> String:
 		for name in names:
 			stamps.append(_file_stamp(vox_folder.path_join(name)))
 	for implementation in IMPLEMENTATION_FILES:
-		stamps.append(_file_stamp(implementation))
+		stamps.append(_content_stamp(implementation))
 	return "\n".join(stamps).sha256_text()
 
 
@@ -116,6 +116,8 @@ static func save_payload(context: Dictionary, entries: Array, face_blocks: int) 
 	}, false)
 	var error := file.get_error()
 	file.close()
+	if error == OK:
+		_prune_older_artifacts(path)
 	return {
 		"ok": error == OK,
 		"error": error,
@@ -133,6 +135,24 @@ static func invalidate(path: String) -> void:
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 
 
+## Un mapa, un artefacto. Cada firma nueva escribía 82 MB y no borraba la anterior: la instalación
+## acumulaba gigas de `.tdcollision` muertos que nadie iba a volver a leer.
+static func _prune_older_artifacts(kept_path: String) -> void:
+	var kept := kept_path.get_file()
+	var prefix := kept.rsplit("-", true, 1)[0] + "-"
+	var directory := DirAccess.open(CACHE_DIRECTORY)
+	if directory == null:
+		return
+	directory.list_dir_begin()
+	var file_name := directory.get_next()
+	while not file_name.is_empty():
+		if not directory.current_is_dir() and file_name != kept \
+				and file_name.begins_with(prefix) and file_name.ends_with(EXTENSION):
+			directory.remove(file_name)
+		file_name = directory.get_next()
+	directory.list_dir_end()
+
+
 static func _file_stamp(path: String) -> String:
 	var absolute := ProjectSettings.globalize_path(path) \
 		if path.begins_with("res://") or path.begins_with("user://") else path
@@ -141,3 +161,15 @@ static func _file_stamp(path: String) -> String:
 	return "%s:%d:%d" % [
 		path, FileAccess.get_size(absolute), FileAccess.get_modified_time(absolute),
 	]
+
+
+## Los archivos de implementación se sellan por contenido, no por fecha: un `git checkout`, un
+## `touch` o un recompilado idéntico cambiaban el mtime y tiraban un artefacto de 82 MB que seguía
+## siendo válido. Son unos pocos MB entre scripts y dylib, así que hashearlos cuesta milisegundos.
+## Los `.vox` y el XML siguen con tamaño+mtime: son 292 MB y ahí el hash costaría más de lo que ahorra.
+static func _content_stamp(path: String) -> String:
+	var absolute := ProjectSettings.globalize_path(path) \
+		if path.begins_with("res://") or path.begins_with("user://") else path
+	if not FileAccess.file_exists(absolute):
+		return "%s:missing" % path
+	return "%s:%s" % [path, FileAccess.get_sha256(absolute)]

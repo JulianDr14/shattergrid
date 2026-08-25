@@ -177,16 +177,6 @@ func flush_pending_render_thread() -> void:
 		_update_compact_regions_render_thread(upload.bytes, upload.source_size, upload.copies)
 
 
-func _update_compact_render_thread(
-	packed: PackedByteArray, destination: Vector3i, region_size: Vector3i
-) -> void:
-	_update_compact_regions_render_thread(packed, region_size, [{
-		"source": Vector3i.ZERO,
-		"destination": destination,
-		"size": region_size,
-	}])
-
-
 func _update_compact_regions_render_thread(
 	packed: PackedByteArray, source_size: Vector3i, copies: Array
 ) -> void:

@@ -406,14 +406,29 @@ func prime_baked_static_collision(center: Vector3, radius: float) -> Dictionary:
 ## Completes the immutable part of the broad phase while the map is still loading. Otherwise the
 ## first shot has to sort every static Shape before it can even discover what was hit.
 func finalize_spatial_index() -> void:
+	# La indexación toca `_static_grid` y `_foundation_cache`: se queda en el hilo principal. El
+	# índice de conectividad, en cambio, solo escribe dentro de su propia VoxelShapeData, así que se
+	# reparte entre los núcleos. Era el 41 % de la carga del mapa medido en serie (8,5 s de 20,6 s).
+	var pending := {}
 	for body in _bodies:
 		if not is_instance_valid(body) or body.state == VoxelBody3D.State.DYNAMIC:
 			continue
 		for shape in body.get_shapes():
 			_index_static_shape(shape)
-			# Se prepara fuera del frame de juego. Las Shapes pequeñas siguen construyéndolo bajo demanda;
-			# las grandes evitan que el primer corte pague el escaneo de todas sus macroceldas.
-			shape.data.prepare_connectivity_index()
+			if shape.data != null:
+				# Dos Shapes podrían compartir el mismo recurso: una sola tarea por instancia.
+				pending[shape.data.get_instance_id()] = shape.data
+	if pending.is_empty():
+		return
+	# Se prepara fuera del frame de juego. Las Shapes pequeñas siguen construyéndolo bajo demanda;
+	# las grandes evitan que el primer corte pague el escaneo de todas sus macroceldas.
+	var shapes := pending.values()
+	var group := WorkerThreadPool.add_group_task(
+		func(index: int) -> void: shapes[index].prepare_connectivity_index(),
+		shapes.size(), -1, true, "voxel_connectivity_index"
+	)
+	# Se espera aquí: un impacto no puede llegar mientras un worker reconstruye el índice.
+	WorkerThreadPool.wait_for_group_task_completion(group)
 
 
 ## La rejilla de Shapes estaticas, que es la que consulta la busqueda de cimiento. No se usa el arbol

@@ -43,6 +43,13 @@ const INITIAL_COLLISION_RADIUS := 45.0
 ## 1.316 -> 32,9 kg. El `density` XML sigue multiplicando esta base y las estructuras estáticas no
 ## se tocan: sus fragmentos sí representan volumen estructural real.
 const AUTHORED_DYNAMIC_FILL_SCALE := 0.025
+## Cada cuánto se le cede un frame al motor para que la pantalla de carga se repinte. El importador
+## es bloqueante: sin esto la ventana se queda congelada 9 s (35 s la primera vez) y parece colgada.
+## 200 ms dan ~45 frames en una carga caliente; el coste real se mide en `progress_ms`.
+const PROGRESS_FRAME_INTERVAL := 200
+## Elementos raíz por tanda. El `<group>` grande de Lee trae 1539 hijos y en un solo bloque no
+## habría nada que enseñar durante la mitad de la carga.
+const PROGRESS_CHUNK := 64
 
 ## Tramos por cable. Con `slack` negativo la línea es recta y sobraría uno, pero los mapas con
 ## holgura necesitan curva y ocho segmentos la dibujan sin que se note el quiebre.
@@ -66,6 +73,10 @@ var _compiled_cache_hit := false
 var _compiled_cache_broken := false
 var _compiled_face_blocks := 0
 var _last_attached_shape: VoxelShape3D
+var _progress := Callable()
+var _progress_last := 0
+var _progress_frames := 0
+var _progress_usec := 0
 var _planner := VoxelMapImportPlanner.new()
 var _scene_traversal := VoxelMapSceneTraversal.new()
 var _scene_committer := VoxelMapSceneCommitter.new()
@@ -92,12 +103,35 @@ static func import_map(
 ) -> Dictionary:
 	var importer := TeardownMapImporter.new()
 	importer._collision = collision
-	return importer._run(world, xml_path, center, radius, offset)
+	# `_run` solo cede frames cuando hay una pantalla de carga escuchando, así que aquí termina sin
+	# suspenderse nunca y devuelve el Dictionary. Se llama a través del `Callable` porque el
+	# analizador exige `await` ante cualquier corrutina, y eso obligaría a propagarlo a los 37
+	# bancos de pruebas que importan mapas sin interfaz.
+	var result: Variant = importer._run.call(world, xml_path, center, radius, offset)
+	if result is Dictionary:
+		return result
+	push_error("TeardownMapImporter: la importación sin pantalla de carga se suspendió")
+	return {}
+
+
+## Igual que [method import_map], pero cediéndole frames al motor para que se vea una pantalla de
+## carga. `progress` recibe `(fraccion: float, etiqueta: String, origen: String)`; `origen` solo
+## llega cuando cambia y dice si la colisión sale de la caché compilada o hay que construirla.
+static func import_map_progressive(
+	world: VoxelWorld3D, xml_path: String, progress: Callable, center := Vector3.INF,
+	radius := DEFAULT_RADIUS, offset := Vector3.ZERO, collision := true
+) -> Dictionary:
+	var importer := TeardownMapImporter.new()
+	importer._collision = collision
+	importer._progress = progress
+	return await importer._run(world, xml_path, center, radius, offset)
 
 
 func _run(
 	world: VoxelWorld3D, xml_path: String, center: Vector3, radius: float, offset: Vector3
 ) -> Dictionary:
+	_progress_last = Time.get_ticks_msec()
+	await _step(0.02, "Buscando caché compilada…")
 	_compiled_cache_context = TeardownMapCache.prepare(
 		xml_path, center, radius, offset, _collision
 	)
@@ -114,6 +148,7 @@ func _run(
 			_compiled_cache_hit = true
 			_report.cache_status = "hit"
 			_report.cache_bytes = FileAccess.get_size(_compiled_cache_context.path)
+	await _step(0.12, "Analizando main.xml…", _cache_source_text())
 	var root := _planner.parse_xml(xml_path)
 	if root.is_empty():
 		push_error("TeardownMapImporter: no se pudo abrir o analizar %s" % xml_path)
@@ -142,6 +177,7 @@ func _run(
 	# `boundary` usa puntos X/Z y pertenece al mismo marco del mapa. Antes se descartaba en `_visit`,
 	# lo que dejaba la geometría recentrada pero el nivel sin límite. Se transforma aquí una sola vez
 	# y el runtime lo representa con 31 cajas + un ArrayMesh en Lee.
+	await _step(0.16, "Trazando el límite del mapa…")
 	var boundary_points := _planner.find_boundary_points(
 		root, Transform3D(Basis.IDENTITY, offset - center)
 	)
@@ -152,9 +188,8 @@ func _run(
 		"world": world, "folder": folder, "center": center, "radius": radius,
 		"offset": offset, "body": null, "dynamic": false, "body_attributes": {},
 	}
-	_report["visited_elements"] = _scene_traversal.traverse(
-		root.children, Transform3D(Basis.IDENTITY, offset - center), context, _commit_element
-	)
+	_report["visited_elements"] = await _traverse_scene(root.children, offset - center, context)
+	await _step(0.80, "Configurando vehículos…")
 	var vehicle_started := Time.get_ticks_usec()
 	_configure_vehicles()
 	_report["vehicle_config_ms"] = (Time.get_ticks_usec() - vehicle_started) / 1000.0
@@ -166,6 +201,7 @@ func _run(
 
 	# `register_body` recorre las Shapes del cuerpo, así que se llama una sola vez por cuerpo y al
 	# final: hacerlo por Shape metería cada una dos veces en el árbol de bounding boxes.
+	await _step(0.84, "Registrando cuerpos en la física…")
 	var physics_budget := world.ensure_physics_budget()
 	var registered := {}
 	for entry: Dictionary in _bodies_bounds:
@@ -180,6 +216,7 @@ func _run(
 	for body: VoxelBody3D in registered:
 		if body.state == VoxelBody3D.State.DYNAMIC:
 			_report.imported_dynamic_bodies += 1
+	await _step(0.88, "Tendiendo cables y juntas…")
 	_build_ropes(world)
 	_resolve_joints(world)
 	if _water != null:
@@ -205,6 +242,7 @@ func _run(
 				rigid.linear_damp = 0.2
 				rigid.angular_damp = 1.0
 		body.sleep()
+	await _step(0.92, "Construyendo el índice estructural…")
 	world.finalize_spatial_index()
 	if _compiled_cache_hit \
 			and not "--eager-teardown-cache" in OS.get_cmdline_user_args():
@@ -212,9 +250,80 @@ func _run(
 		_report["cache_prime_ms"] = prime.ms
 		_report["cache_prime_blocks"] = prime.blocks
 		_report["cache_pending_blocks"] = prime.pending_blocks
+	await _step(0.96, "Guardando la caché de colisiones…" if not _compiled_cache_hit \
+		else "Cargando la colisión inicial…")
 	_finish_compiled_cache()
 	_vox_cache.clear()
+	_report["progress_frames"] = _progress_frames
+	_report["progress_ms"] = snappedf(_progress_usec / 1000.0, 0.1)
+	await _step(1.0, "Listo")
 	return _report
+
+
+## Recorre la escena por tandas para poder ceder frames. Cada tanda vuelve a envolver los hijos en
+## un `<group>` sintético con los mismos atributos, así que el motor recalcula exactamente la misma
+## transformación que en una pasada única; lo único que cambia es que el grupo se visita varias
+## veces, y esas visitas de más se descuentan del recuento.
+func _traverse_scene(roots: Array, translation: Vector3, context: Dictionary) -> int:
+	var base := Transform3D(Basis.IDENTITY, translation)
+	if not _progress.is_valid():
+		return _scene_traversal.traverse(roots, base, context, _commit_element)
+	var total := 0
+	for element: Dictionary in roots:
+		total += (element.get("children", []) as Array).size()
+	total = maxi(total, 1)
+	var done := 0
+	var visited := 0
+	for element: Dictionary in roots:
+		var children: Array = element.get("children", [])
+		if children.size() <= PROGRESS_CHUNK:
+			visited += _scene_traversal.traverse([element], base, context, _commit_element)
+			done += children.size()
+			await _step(0.20 + 0.60 * done / float(total), _traverse_label(done, total))
+			continue
+		var cursor := 0
+		while cursor < children.size():
+			var slice := children.slice(cursor, cursor + PROGRESS_CHUNK)
+			# −1: el grupo sintético cuenta como visita en cada tanda, pero es el mismo elemento.
+			visited += _scene_traversal.traverse([{
+				"tag": element.tag, "attributes": element.attributes, "children": slice,
+			}], base, context, _commit_element) - 1
+			cursor += PROGRESS_CHUNK
+			done += slice.size()
+			await _step(0.20 + 0.60 * done / float(total), _traverse_label(done, total))
+		visited += 1
+	return visited
+
+
+func _traverse_label(done: int, total: int) -> String:
+	return "Construyendo la escena…  %d/%d bloques" % [done, total]
+
+
+func _cache_source_text() -> String:
+	if not bool(_compiled_cache_context.get("enabled", false)):
+		return "Caché desactivada (--no-teardown-cache o importación parcial)"
+	if _compiled_cache_hit:
+		return "Colisión desde caché · %.1f MB en %d ms" % [
+			_report.cache_bytes / 1048576.0, _report.cache_load_ms,
+		]
+	return "Sin caché: se compila el mapa entero (solo esta vez)"
+
+
+## Devuelve al motor el control el tiempo justo para repintar, y solo si alguien está mirando. El
+## `await` no suspende cuando no hay `progress`, así que las llamadas sin pantalla siguen siendo
+## síncronas y devuelven el Dictionary directamente.
+func _step(fraction: float, label: String, source := "") -> void:
+	if not _progress.is_valid():
+		return
+	_progress.call(fraction, label, source)
+	var now := Time.get_ticks_msec()
+	if now - _progress_last < PROGRESS_FRAME_INTERVAL and fraction < 1.0:
+		return
+	var started := Time.get_ticks_usec()
+	await Engine.get_main_loop().process_frame
+	_progress_usec += Time.get_ticks_usec() - started
+	_progress_frames += 1
+	_progress_last = Time.get_ticks_msec()
 
 
 func _create_boundary(world: VoxelWorld3D, points: PackedVector3Array) -> void:
