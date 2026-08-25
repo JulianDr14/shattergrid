@@ -2,6 +2,17 @@
 #include "voxel_palette.hpp"
 #include "voxel_shape_data.hpp"
 #include "voxel_brick_pool.hpp"
+#include "voxel_runtime_registry.hpp"
+#include "voxel_rope_solver.hpp"
+#include "voxel_rope_physics_bridge.hpp"
+#include "voxel_transform_tracker.hpp"
+#include "voxel_collision_installer.hpp"
+#include "voxel_map_import_planner.hpp"
+#include "voxel_impact_queue.hpp"
+#include "voxel_collision_handoff_queue.hpp"
+#include "voxel_support_planner.hpp"
+#include "voxel_structural_graph.hpp"
+#include "voxel_damage_planner.hpp"
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/defs.hpp>
@@ -18,6 +29,17 @@ static void initialize_shattergrid_core(ModuleInitializationLevel p_level) {
     GDREGISTER_CLASS(VoxelPalette);
     GDREGISTER_CLASS(VoxelPhysicsBudget);
     GDREGISTER_CLASS(VoxelRendererSettings);
+    GDREGISTER_CLASS(VoxelRuntimeRegistry);
+    GDREGISTER_CLASS(VoxelRopeSolver);
+    GDREGISTER_CLASS(VoxelRopePhysicsBridge);
+    GDREGISTER_CLASS(VoxelTransformTracker);
+    GDREGISTER_CLASS(VoxelCollisionInstaller);
+    GDREGISTER_CLASS(VoxelMapImportPlanner);
+    GDREGISTER_CLASS(VoxelImpactQueue);
+    GDREGISTER_CLASS(VoxelCollisionHandoffQueue);
+    GDREGISTER_CLASS(VoxelSupportPlanner);
+    GDREGISTER_CLASS(VoxelStructuralGraph);
+    GDREGISTER_CLASS(VoxelDamagePlanner);
 }
 
 static void uninitialize_shattergrid_core(ModuleInitializationLevel p_level) {

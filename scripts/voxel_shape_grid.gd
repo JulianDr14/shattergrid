@@ -54,7 +54,14 @@ func remove_id(key: int) -> void:
 	for cell: Vector3i in _placed[key]:
 		var bucket: Array = _cells.get(cell, [])
 		for position in range(bucket.size() - 1, -1, -1):
-			var shape := bucket[position] as VoxelShape3D
+			# El Variant conserva el id de un Object liberado, pero intentar castearlo ya lanza error
+			# antes de que una variable tipada pueda comprobar null. Validar el Variant primero permite
+			# limpiar la celda sin tocar el objeto muerto.
+			var candidate: Variant = bucket[position]
+			if not is_instance_valid(candidate):
+				bucket.remove_at(position)
+				continue
+			var shape := candidate as VoxelShape3D
 			if shape == null or shape.get_instance_id() == key:
 				bucket.remove_at(position)
 		if bucket.is_empty():
@@ -83,9 +90,14 @@ func query(region: AABB) -> Array[VoxelShape3D]:
 				var bucket: Array = _cells.get(Vector3i(x, y, z), [])
 				if not bucket.is_empty():
 					candidates.append_array(bucket)
-	for shape: VoxelShape3D in candidates:
-		var key := shape.get_instance_id() if is_instance_valid(shape) else 0
-		if key == 0 or seen.has(key):
+	for candidate: Variant in candidates:
+		if not is_instance_valid(candidate):
+			continue
+		var shape := candidate as VoxelShape3D
+		if shape == null:
+			continue
+		var key := shape.get_instance_id()
+		if seen.has(key):
 			continue
 		seen[key] = true
 		if shape.voxel_count() > 0 and shape.world_bounds().intersects(region):

@@ -107,11 +107,15 @@ var _vehicle_camera_yaw := 0.0
 var _vehicle_camera_pitch := 0.12
 var _vehicle_camera_distance := VEHICLE_CAMERA_DISTANCE
 var _vehicle_camera_target_distance := VEHICLE_CAMERA_DISTANCE
+var _saved_vehicle_entry_position := Vector3.ZERO
 
 
 func _ready() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	_camera_rest_position = camera.position
+	# La cámara consume manualmente la transformada interpolada del vehículo en `_process`; no debe
+	# recibir además otra interpolación local, que añadiría un tick de retraso y realimentación.
+	camera.physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
 	# Conservative static collision LOD can turn 10 cm voxel stairs into 20–40 cm risers. Godot's
 	# snap handles descents; `_try_step_up` handles the matching ascent without a ramp mesh.
 	floor_snap_length = FLOOR_SNAP
@@ -644,6 +648,7 @@ func _toggle_vehicle() -> void:
 	if not vehicle.set_driver(self):
 		return
 	_driving_vehicle = vehicle
+	_saved_vehicle_entry_position = global_position
 	_saved_collision_layer = collision_layer
 	_saved_collision_mask = collision_mask
 	_saved_camera_position = camera.position
@@ -661,6 +666,7 @@ func _toggle_vehicle() -> void:
 		- vehicle.forward_direction() * VEHICLE_CAMERA_DISTANCE \
 		+ Vector3.UP * VEHICLE_CAMERA_HEIGHT
 	camera.look_at(vehicle.get_camera_target() + vehicle.forward_direction() * 2.0, Vector3.UP)
+	camera.reset_physics_interpolation()
 	_update_interaction_hint()
 
 
@@ -669,23 +675,88 @@ func _leave_vehicle(place_player: bool) -> void:
 	_driving_vehicle = null
 	if vehicle != null and is_instance_valid(vehicle):
 		vehicle.clear_driver(self)
-		if place_player:
-			global_position = vehicle.get_exit_position()
-			look_at(global_position + vehicle.forward_direction(), Vector3.UP)
 	collision_layer = _saved_collision_layer
 	collision_mask = _saved_collision_mask
+	if place_player and vehicle != null and is_instance_valid(vehicle):
+		global_position = _safe_vehicle_exit(vehicle)
+		var facing := vehicle.forward_direction()
+		facing.y = 0.0
+		look_at(global_position + (facing.normalized() if facing.length_squared() > 0.01 \
+			else Vector3.FORWARD), Vector3.UP)
 	camera.top_level = false
 	camera.position = _saved_camera_position if _saved_camera_position != Vector3.ZERO \
 		else _camera_rest_position
 	camera.rotation = _saved_camera_rotation
 	camera.fov = _saved_camera_fov
+	camera.reset_physics_interpolation()
 	velocity = Vector3.ZERO
 	_update_interaction_hint()
 
 
 func on_vehicle_removed(vehicle: VoxelVehicle3D) -> void:
 	if vehicle == _driving_vehicle:
-		_leave_vehicle(false)
+		_leave_vehicle(true)
+
+
+func on_vehicle_flooded(vehicle: VoxelVehicle3D) -> void:
+	if vehicle == _driving_vehicle:
+		_leave_vehicle(true)
+
+
+func _safe_vehicle_exit(vehicle: VoxelVehicle3D) -> Vector3:
+	var space := get_world_3d().direct_space_state
+	var exclusions: Array[RID] = [get_rid()]
+	exclusions.append_array(vehicle.get_camera_collision_rids())
+	var clearance_exclusions: Array[RID] = [get_rid()]
+	var boundary: Node = null
+	if vehicle.voxel_owner != null and is_instance_valid(vehicle.voxel_owner):
+		var world := vehicle.voxel_owner.get_parent()
+		if world != null:
+			boundary = world.get_node_or_null("TeardownBoundary")
+	var bounds := vehicle.get_world_bounds()
+	var ray_depth := maxf(10.0, bounds.size.y + 6.0)
+	for high_point in vehicle.get_exit_candidates():
+		if boundary != null and boundary.has_method("contains_world_point") \
+				and not bool(boundary.call("contains_world_point", high_point)):
+			continue
+		var ray := PhysicsRayQueryParameters3D.create(
+			high_point, high_point - Vector3.UP * ray_depth
+		)
+		ray.exclude = exclusions
+		ray.collision_mask = collision_mask
+		var hit := space.intersect_ray(ray)
+		if not hit.is_empty() and (hit.normal as Vector3).dot(Vector3.UP) >= 0.45:
+			var grounded := (hit.position as Vector3) + Vector3.UP * 0.055
+			if _vehicle_exit_is_clear(grounded, clearance_exclusions):
+				return grounded
+		if _water == null or not is_instance_valid(_water):
+			_find_water()
+		if _water != null:
+			var water_sample := _water.sample_surface(high_point)
+			if not water_sample.is_empty():
+				var swimming_exit := Vector3(
+					high_point.x,
+					float(water_sample.surface_y) - SWIM_ORIGIN_DEPTH + 0.12,
+					high_point.z
+				)
+				if _vehicle_exit_is_clear(swimming_exit, clearance_exclusions):
+					return swimming_exit
+	# El lugar desde el que se entró ya pasó las colisiones y el boundary. Es una red de seguridad
+	# mejor que inventar una coordenada bajo un coche volcado o sobre un precipicio.
+	return _saved_vehicle_entry_position
+
+
+func _vehicle_exit_is_clear(position: Vector3, exclusions: Array[RID]) -> bool:
+	var collision := get_node_or_null("Collision") as CollisionShape3D
+	if collision == null or collision.shape == null:
+		return true
+	var query := PhysicsShapeQueryParameters3D.new()
+	query.shape = collision.shape
+	query.transform = Transform3D(Basis.IDENTITY, position) * collision.transform
+	query.collision_mask = collision_mask
+	query.exclude = exclusions
+	query.collide_with_areas = false
+	return get_world_3d().direct_space_state.intersect_shape(query, 1).is_empty()
 
 
 func is_driving_vehicle() -> bool:
@@ -717,9 +788,11 @@ func _update_vehicle_camera(delta: float) -> void:
 	)
 	if absf(_vehicle_camera_distance - _vehicle_camera_target_distance) < 0.002:
 		_vehicle_camera_distance = _vehicle_camera_target_distance
-	var target := _driving_vehicle.get_camera_target()
+	var vehicle_transform := _driving_vehicle.get_global_transform_interpolated()
+	var vehicle_forward := vehicle_transform.basis.z.normalized()
+	var target := _driving_vehicle.get_camera_target_from_transform(vehicle_transform)
 	var orbit_forward := Basis(Vector3.UP, _vehicle_camera_yaw) \
-		* _driving_vehicle.forward_direction()
+		* vehicle_forward
 	var horizontal := cos(_vehicle_camera_pitch) * _vehicle_camera_distance
 	var exterior := target - orbit_forward * horizontal \
 		+ Vector3.UP * (
@@ -728,7 +801,7 @@ func _update_vehicle_camera(delta: float) -> void:
 		)
 	# La vista interior usa el `<location tags="player">` authored del XML, no el centro de masa.
 	# El blend evita el salto de camara cuando la rueda cruza el ultimo paso de zoom.
-	var cockpit := _driving_vehicle.get_driver_view_position()
+	var cockpit := _driving_vehicle.get_driver_view_from_transform(vehicle_transform)
 	var interior_weight := 1.0 - smoothstep(
 		VEHICLE_CAMERA_COCKPIT_BLEND_END,
 		VEHICLE_CAMERA_COCKPIT_BLEND_START,
@@ -749,7 +822,7 @@ func _update_vehicle_camera(delta: float) -> void:
 		orbit_forward * cos(_vehicle_camera_pitch)
 		- Vector3.UP * sin(_vehicle_camera_pitch)
 	).normalized()
-	var exterior_look := target + _driving_vehicle.forward_direction() * 2.0
+	var exterior_look := target + vehicle_forward * 2.0
 	var cockpit_look := cockpit + cockpit_direction * 10.0
 	camera.look_at(exterior_look.lerp(cockpit_look, interior_weight), Vector3.UP)
 	camera.fov = lerpf(_saved_camera_fov, VEHICLE_CAMERA_COCKPIT_FOV, interior_weight)

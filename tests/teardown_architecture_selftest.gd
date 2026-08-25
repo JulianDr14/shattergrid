@@ -79,7 +79,7 @@ func _run() -> void:
 			and fragment.get_physics_body() is RigidBody3D,
 			"el fragmento nace realmente como RigidBody Jolt")
 		_check(fragment.compound_boxes <= world.physics_budget.max_boxes_per_body,
-			"respeta 128 cajas por Body")
+			"respeta %d cajas por Body" % world.physics_budget.max_boxes_per_body)
 	var metrics := world.get_metrics()
 	_check(int(metrics.awake_compound_boxes) <= world.physics_budget.max_active_boxes,
 		"respeta el presupuesto global de cajas activas")

@@ -1,8 +1,9 @@
-[gd_scene load_steps=13 format=3]
+[gd_scene load_steps=22 format=3]
 
 [ext_resource type="Script" path="res://scripts/main.gd" id="1_main"]
 [ext_resource type="Script" path="res://scripts/voxel_world_3d.gd" id="2_world"]
 [ext_resource type="Script" path="res://scripts/player.gd" id="3_player"]
+[ext_resource type="Script" path="res://scripts/pause_menu.gd" id="4_pause"]
 
 [sub_resource type="ProceduralSkyMaterial" id="Sky_1"]
 sky_horizon_color = Color(0.64625, 0.65575, 0.67075, 1)
@@ -45,6 +46,96 @@ font_size = 15
 font_color = Color(1, 1, 1, 0.75)
 shadow_size = 2
 shadow_color = Color(0, 0, 0, 0.6)
+
+[sub_resource type="Gradient" id="Pause_vignette_gradient"]
+colors = PackedColorArray(0.025, 0.045, 0.075, 0.72, 0.015, 0.025, 0.045, 0.92)
+
+[sub_resource type="GradientTexture2D" id="Pause_vignette"]
+gradient = SubResource("Pause_vignette_gradient")
+width = 1024
+height = 512
+fill = 1
+fill_from = Vector2(0.5, 0.5)
+fill_to = Vector2(1, 0.5)
+
+[sub_resource type="StyleBoxFlat" id="Pause_card"]
+bg_color = Color(0.035, 0.055, 0.085, 0.96)
+content_margin_left = 34.0
+content_margin_top = 30.0
+content_margin_right = 34.0
+content_margin_bottom = 30.0
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.28, 0.72, 0.92, 0.32)
+corner_radius_top_left = 18
+corner_radius_top_right = 18
+corner_radius_bottom_right = 18
+corner_radius_bottom_left = 18
+shadow_color = Color(0, 0, 0, 0.5)
+shadow_size = 24
+
+[sub_resource type="StyleBoxFlat" id="Pause_button"]
+bg_color = Color(0.075, 0.11, 0.16, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.28, 0.72, 0.92, 0.18)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
+content_margin_left = 18.0
+content_margin_right = 18.0
+
+[sub_resource type="StyleBoxFlat" id="Pause_button_hover"]
+bg_color = Color(0.08, 0.3, 0.42, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.38, 0.86, 1, 0.8)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
+content_margin_left = 18.0
+content_margin_right = 18.0
+
+[sub_resource type="StyleBoxFlat" id="Pause_button_pressed"]
+bg_color = Color(0.045, 0.2, 0.3, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.38, 0.86, 1, 1)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
+content_margin_left = 18.0
+content_margin_right = 18.0
+
+[sub_resource type="StyleBoxFlat" id="Pause_button_focus"]
+bg_color = Color(0, 0, 0, 0)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.4, 0.9, 1, 0.9)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
+
+[sub_resource type="StyleBoxFlat" id="Pause_divider"]
+bg_color = Color(0.22, 0.68, 0.88, 0.5)
+corner_radius_top_left = 1
+corner_radius_top_right = 1
+corner_radius_bottom_right = 1
+corner_radius_bottom_left = 1
 
 [node name="Main" type="Node3D"]
 script = ExtResource("1_main")
@@ -132,5 +223,122 @@ offset_left = 12.0
 offset_top = -32.0
 offset_right = 1100.0
 offset_bottom = -10.0
-text = "WASD mover/conducir  ·  E entrar/salir del vehículo  ·  Espacio saltar/freno de mano  ·  Clic izq cañón  ·  Clic der agarrar  ·  G/clic medio bomba  ·  R reiniciar  ·  Esc liberar ratón"
+text = "WASD mover/conducir  ·  E entrar/salir del vehículo  ·  Espacio saltar/freno de mano  ·  Clic izq cañón  ·  Clic der agarrar  ·  G/clic medio bomba  ·  P pausa  ·  R reiniciar  ·  Esc liberar ratón"
 label_settings = SubResource("Hud_text")
+
+[node name="PauseMenu" type="CanvasLayer" parent="."]
+layer = 100
+process_mode = 3
+script = ExtResource("4_pause")
+
+[node name="Overlay" type="Control" parent="PauseMenu"]
+visible = false
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 1
+
+[node name="Backdrop" type="TextureRect" parent="PauseMenu/Overlay"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+texture = SubResource("Pause_vignette")
+expand_mode = 1
+stretch_mode = 6
+mouse_filter = 2
+
+[node name="Layout" type="CenterContainer" parent="PauseMenu/Overlay"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="MenuCard" type="PanelContainer" parent="PauseMenu/Overlay/Layout"]
+custom_minimum_size = Vector2(440, 0)
+layout_mode = 2
+theme_override_styles/panel = SubResource("Pause_card")
+
+[node name="Content" type="VBoxContainer" parent="PauseMenu/Overlay/Layout/MenuCard"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="Eyebrow" type="Label" parent="PauseMenu/Overlay/Layout/MenuCard/Content"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.38, 0.86, 1, 1)
+theme_override_font_sizes/font_size = 14
+text = "SHATTERGRID  /  SISTEMA"
+horizontal_alignment = 1
+
+[node name="Title" type="Label" parent="PauseMenu/Overlay/Layout/MenuCard/Content"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.94, 0.98, 1, 1)
+theme_override_font_sizes/font_size = 40
+text = "JUEGO EN PAUSA"
+horizontal_alignment = 1
+
+[node name="Subtitle" type="Label" parent="PauseMenu/Overlay/Layout/MenuCard/Content"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.65, 0.72, 0.8, 1)
+theme_override_font_sizes/font_size = 15
+text = "La simulación y la destrucción están detenidas"
+horizontal_alignment = 1
+
+[node name="Divider" type="Panel" parent="PauseMenu/Overlay/Layout/MenuCard/Content"]
+custom_minimum_size = Vector2(0, 2)
+layout_mode = 2
+theme_override_styles/panel = SubResource("Pause_divider")
+
+[node name="ResumeButton" type="Button" parent="PauseMenu/Overlay/Layout/MenuCard/Content"]
+custom_minimum_size = Vector2(0, 52)
+layout_mode = 2
+focus_neighbor_bottom = NodePath("../RestartButton")
+theme_override_colors/font_color = Color(0.92, 0.97, 1, 1)
+theme_override_colors/font_hover_color = Color(1, 1, 1, 1)
+theme_override_font_sizes/font_size = 18
+theme_override_styles/normal = SubResource("Pause_button")
+theme_override_styles/hover = SubResource("Pause_button_hover")
+theme_override_styles/pressed = SubResource("Pause_button_pressed")
+theme_override_styles/focus = SubResource("Pause_button_focus")
+text = "CONTINUAR"
+
+[node name="RestartButton" type="Button" parent="PauseMenu/Overlay/Layout/MenuCard/Content"]
+custom_minimum_size = Vector2(0, 52)
+layout_mode = 2
+focus_neighbor_top = NodePath("../ResumeButton")
+focus_neighbor_bottom = NodePath("../QuitButton")
+theme_override_colors/font_color = Color(0.92, 0.97, 1, 1)
+theme_override_colors/font_hover_color = Color(1, 1, 1, 1)
+theme_override_font_sizes/font_size = 18
+theme_override_styles/normal = SubResource("Pause_button")
+theme_override_styles/hover = SubResource("Pause_button_hover")
+theme_override_styles/pressed = SubResource("Pause_button_pressed")
+theme_override_styles/focus = SubResource("Pause_button_focus")
+text = "REINICIAR ESCENA"
+
+[node name="QuitButton" type="Button" parent="PauseMenu/Overlay/Layout/MenuCard/Content"]
+custom_minimum_size = Vector2(0, 52)
+layout_mode = 2
+focus_neighbor_top = NodePath("../RestartButton")
+theme_override_colors/font_color = Color(0.92, 0.97, 1, 1)
+theme_override_colors/font_hover_color = Color(1, 1, 1, 1)
+theme_override_font_sizes/font_size = 18
+theme_override_styles/normal = SubResource("Pause_button")
+theme_override_styles/hover = SubResource("Pause_button_hover")
+theme_override_styles/pressed = SubResource("Pause_button_pressed")
+theme_override_styles/focus = SubResource("Pause_button_focus")
+text = "SALIR AL ESCRITORIO"
+
+[node name="Hint" type="Label" parent="PauseMenu/Overlay/Layout/MenuCard/Content"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.52, 0.6, 0.68, 1)
+theme_override_font_sizes/font_size = 13
+text = "Pulsa  P  para volver al juego"
+horizontal_alignment = 1

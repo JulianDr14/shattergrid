@@ -1,6 +1,18 @@
 {
   "enabled_classes": [
+    "BoxShape3D",
+    "CollisionShape3D",
+    "ConcavePolygonShape3D",
+    "Engine",
+    "FileAccess",
+    "Node",
+    "Node3D",
     "Resource",
-    "OS"
+    "OS",
+    "PhysicsDirectSpaceState3D",
+    "PhysicsRayQueryParameters3D",
+    "RigidBody3D",
+    "World3D",
+    "XMLParser"
   ]
 }

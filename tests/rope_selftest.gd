@@ -67,6 +67,11 @@ func _run() -> void:
 	for _frame in 240:
 		await physics_frame
 	_check(ropes.awake_count() == 0, "y vuelve a dormirse cuando se calma")
+	_check(VoxelRopes.elastic_tension_for_extension(VoxelRopes.TENSION_SLACK) == 0.0 \
+			and VoxelRopes.elastic_tension_for_extension(
+				VoxelRopes.TENSION_SLACK + 0.001
+			) < 25.0,
+		"la tensión entra de forma continua y no hace castañetear el anclaje")
 
 	# Al romperse un extremo deja de usar el damping fuerte del vano sujeto. En un segundo debe
 	# acelerar casi con gravedad, no alcanzar la velocidad terminal de una hoja de papel.

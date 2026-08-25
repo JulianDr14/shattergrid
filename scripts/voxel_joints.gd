@@ -57,6 +57,33 @@ func live_count() -> int:
 	return live
 
 
+## Despierta la isla de constraints de un mecanismo/vehículo sin mantener un polling global. Es
+## especialmente importante para remolques: el motor despierta el tractor explícitamente, mientras
+## que el remolque se importó dormido y depende de que el backend propague el wake a través del joint.
+func wake_connected(source: VoxelBody3D, maximum_bodies := 24) -> int:
+	if source == null or not is_instance_valid(source) or maximum_bodies <= 0:
+		return 0
+	var pending: Array[VoxelBody3D] = [source]
+	var visited := {}
+	var woken := 0
+	while not pending.is_empty() and visited.size() < maximum_bodies:
+		var body := pending.pop_front() as VoxelBody3D
+		if body == null or not is_instance_valid(body) or visited.has(body.get_instance_id()):
+			continue
+		visited[body.get_instance_id()] = true
+		body.wake_for_interaction()
+		woken += 1
+		for record: Dictionary in _by_body.get(body.get_instance_id(), []):
+			if not VoxelDoor3D._record_joint_is_live(record):
+				continue
+			var neighbour := record.get("other_body") as VoxelBody3D \
+				if record.get("owner_body") == body else record.get("owner_body") as VoxelBody3D
+			if neighbour != null and is_instance_valid(neighbour) \
+					and not visited.has(neighbour.get_instance_id()):
+				pending.append(neighbour)
+	return woken
+
+
 ## Rompe los joints que la onda alcanza y que ya no tienen material a los dos lados. Solo mira los
 ## que caen dentro del radio, asi que un disparo cuesta lo que cuestan los joints de al lado.
 func on_impact(center: Vector3, blast_radius: float) -> int:

@@ -64,6 +64,7 @@ var _compiled_cache_hit := false
 var _compiled_cache_broken := false
 var _compiled_face_blocks := 0
 var _last_attached_shape: VoxelShape3D
+var _planner := VoxelMapImportPlanner.new()
 var _report := {
 	"shapes": 0, "voxboxes": 0, "bodies": 0, "joints": 0,
 	"authored_dynamic_bodies": 0, "imported_dynamic_bodies": 0, "density_overrides": 0,
@@ -109,14 +110,15 @@ func _run(
 			_compiled_cache_hit = true
 			_report.cache_status = "hit"
 			_report.cache_bytes = FileAccess.get_size(_compiled_cache_context.path)
-	var root := _parse_xml(xml_path)
+	var root := _planner.parse_xml(xml_path)
 	if root.is_empty():
+		push_error("TeardownMapImporter: no se pudo abrir o analizar %s" % xml_path)
 		return {}
 	var folder := xml_path.get_base_dir()
 	var spawn := Vector3.ZERO
 	for child: Dictionary in root.children:
 		if child.tag == "spawnpoint":
-			spawn = _vec3(child.attributes.get("pos", ""))
+			spawn = _planner.parse_vec3(child.attributes.get("pos", ""))
 		elif child.tag == "environment":
 			# Se pasan crudos: el `<environment>` no crea nada en el mundo de voxeles, lo aplica quien
 			# tenga el WorldEnvironment de la escena.
@@ -125,7 +127,7 @@ func _run(
 		# El spawnpoint de Teardown no sirve como centro de recorte: en Lee está en el bosque del
 		# borde, a 103 m del centro geométrico, así que un radio de 25 m solo trae hierba y árboles.
 		# El centroide de la geometría cae en la fábrica, que es lo que interesa medir.
-		center = _centroid(root, Transform3D.IDENTITY, {"sum": Vector3.ZERO, "count": 0})
+		center = _planner.centroid(root, Transform3D.IDENTITY)
 		# El recorte se centra solo en el plano del mapa. Restar también el centroide vertical hundía
 		# la mitad de Lee bajo el Ground opaco de la escena de prueba, dando la impresión de que el
 		# atlas estaba vacío hasta que el primer disparo/cambio de vista revelaba alguna cubierta.
@@ -136,7 +138,7 @@ func _run(
 	# `boundary` usa puntos X/Z y pertenece al mismo marco del mapa. Antes se descartaba en `_visit`,
 	# lo que dejaba la geometría recentrada pero el nivel sin límite. Se transforma aquí una sola vez
 	# y el runtime lo representa con 31 cajas + un ArrayMesh en Lee.
-	var boundary_points := _find_boundary_points(
+	var boundary_points := _planner.find_boundary_points(
 		root, Transform3D(Basis.IDENTITY, offset - center)
 	)
 	_create_boundary(world, boundary_points)
@@ -210,29 +212,6 @@ func _run(
 	return _report
 
 
-func _find_boundary_points(
-	element: Dictionary, parent_transform: Transform3D
-) -> PackedVector3Array:
-	var attributes: Dictionary = element.attributes
-	var transform := parent_transform * Transform3D(
-		Basis(_rotation(attributes.get("rot", ""))), _vec3(attributes.get("pos", ""))
-	)
-	if element.tag == "boundary":
-		var result := PackedVector3Array()
-		for child: Dictionary in element.children:
-			if child.tag != "vertex":
-				continue
-			var values := String(child.attributes.get("pos", "")).split(" ", false)
-			if values.size() >= 2:
-				result.append(transform * Vector3(float(values[0]), 0.0, float(values[1])))
-		return result
-	for child: Dictionary in element.children:
-		var found := _find_boundary_points(child, transform)
-		if not found.is_empty():
-			return found
-	return PackedVector3Array()
-
-
 func _create_boundary(world: VoxelWorld3D, points: PackedVector3Array) -> void:
 	if points.size() < 3:
 		return
@@ -263,25 +242,12 @@ func _create_boundary(world: VoxelWorld3D, points: PackedVector3Array) -> void:
 	_report.boundary_depth = snappedf(maximum.y - minimum.y, 0.01)
 
 
-## Centro geométrico de las Shapes, sin cargar ni un voxel: solo recorre el árbol acumulando
-## transformadas. Sirve como centro de recorte por defecto.
-func _centroid(element: Dictionary, parent_transform: Transform3D, accumulator: Dictionary) -> Vector3:
-	var transform: Transform3D = parent_transform * Transform3D(
-		Basis(_rotation(element.attributes.get("rot", ""))), _vec3(element.attributes.get("pos", ""))
-	)
-	if element.tag == "vox" or element.tag == "voxbox":
-		accumulator.sum += transform.origin
-		accumulator.count += 1
-	for child: Dictionary in element.children:
-		_centroid(child, transform, accumulator)
-	return accumulator.sum / maxi(1, accumulator.count)
-
-
 func _visit(element: Dictionary, parent_transform: Transform3D, context: Dictionary) -> void:
 	var tag: String = element.tag
 	var attributes: Dictionary = element.attributes
 	var local := Transform3D(
-		Basis(_rotation(attributes.get("rot", ""))), _vec3(attributes.get("pos", ""))
+		Basis(_planner.parse_rotation(attributes.get("rot", ""))),
+		_planner.parse_vec3(attributes.get("pos", ""))
 	)
 	var transform := parent_transform * local
 	var child_context := context
@@ -398,7 +364,7 @@ func _add_water(element: Dictionary, transform: Transform3D, context: Dictionary
 		context.world.add_child(_water)
 	var color := VoxelWaterSystem.DEFAULT_COLOR
 	if attributes.has("color"):
-		var color_values := _float_values(attributes.color, 3)
+		var color_values := _planner.parse_float_values(attributes.color, 3)
 		color = Color(color_values[0], color_values[1], color_values[2], 1.0)
 	var depth := maxf(0.0, float(attributes.get("depth", 0.0)))
 	var visibility := maxf(
@@ -468,7 +434,7 @@ func _add_vox(attributes: Dictionary, transform: Transform3D, context: Dictionar
 
 
 func _add_voxbox(attributes: Dictionary, transform: Transform3D, context: Dictionary) -> VoxelBody3D:
-	var size := Vector3i(_vec3(attributes.get("size", "50 30 20")))
+	var size := Vector3i(_planner.parse_vec3(attributes.get("size", "50 30 20")))
 	if size.x <= 0 or size.y <= 0 or size.z <= 0:
 		return null
 	if not _accept(transform.origin, size, context):
@@ -494,11 +460,11 @@ func _add_voxbox(attributes: Dictionary, transform: Transform3D, context: Dictio
 	mask.fill(1)
 	mask[1] = 0 if material in TeardownPalette.WALK_THROUGH else 1
 	palette.set_meta("collide_mask", mask)
-	var color := _vec3(attributes.get("color", "1 1 1"))
+	var color := _planner.parse_vec3(attributes.get("color", "1 1 1"))
 	# El conversor escribe el material visual del voxbox con el mismo orden del G-buffer de
 	# Teardown: reflectividad, suavidad, metallic y emision. Aun no trazamos reflejos, pero
 	# conservamos roughness/metallic/emission en la paleta que consume el pase DDA.
-	var pbr := _float_values(attributes.get("pbr", "0 0 0 0"), 4)
+	var pbr := _planner.parse_float_values(attributes.get("pbr", "0 0 0 0"), 4)
 	palette.set_material(1, {
 		"color": Color(color.x, color.y, color.z),
 		"opacity": float(traits.get("opacity", 1.0)),
@@ -558,7 +524,7 @@ func _add_rope(element: Dictionary, transform: Transform3D) -> void:
 	var anchors := PackedVector3Array()
 	for child: Dictionary in element.children:
 		if child.tag == "location":
-			anchors.append(transform * _vec3(child.attributes.get("pos", "")))
+			anchors.append(transform * _planner.parse_vec3(child.attributes.get("pos", "")))
 	if anchors.size() < 2:
 		return
 	# `slack` es la longitud sobrante en metros. En Lee los 79 tendidos van con -0,15, o sea tensos.
@@ -930,7 +896,7 @@ func _create_doors(world: VoxelWorld3D) -> void:
 		var body := key as VoxelBody3D
 		var body_bounds := _bounds_for_body(body)
 		var records: Array[Dictionary] = by_body[body]
-		var roles := classify_door_joint_records(records, body_bounds)
+		var roles := _planner.classify_door_joint_records(records, body_bounds)
 		if roles.is_empty():
 			continue
 		var door := VoxelDoor3D.new()
@@ -990,67 +956,7 @@ func _bounds_for_body(body: VoxelBody3D) -> AABB:
 
 
 static func classify_door_joint_records(records: Array[Dictionary], body_bounds: AABB) -> Dictionary:
-	if records.is_empty():
-		return {}
-	var size := body_bounds.size
-	var horizontal_long := maxf(size.x, size.z)
-	var horizontal_short := minf(size.x, size.z)
-	# Includes house doors, double leaves and small industrial doors, while rejecting signs,
-	# vehicle axles and the 16 m crane boom that also use paired ball joints in Lee.
-	if size.y < 1.15 or size.y > 3.4 or horizontal_long < 0.4 \
-			or horizontal_long > 2.7 or horizontal_short > 1.25:
-		return {}
-
-	var hinges: Array[Dictionary] = []
-	var hinge_indices := {}
-	for index in records.size():
-		var attributes: Dictionary = records[index].get("attributes", {})
-		if String(attributes.get("type", "ball")) == "hinge":
-			hinges.append(records[index])
-			hinge_indices[index] = true
-
-	if hinges.is_empty():
-		var best_a := -1
-		var best_b := -1
-		var best_score := -INF
-		for a in records.size():
-			var a_position := _joint_record_position(records[a])
-			for b in range(a + 1, records.size()):
-				var b_position := _joint_record_position(records[b])
-				var vertical := absf(a_position.y - b_position.y)
-				var horizontal := Vector2(a_position.x, a_position.z).distance_to(
-					Vector2(b_position.x, b_position.z)
-				)
-				if vertical < 0.55 or horizontal > 0.36:
-					continue
-				var score := vertical - horizontal * 2.0
-				if score > best_score:
-					best_score = score
-					best_a = a
-					best_b = b
-		if best_a < 0:
-			return {}
-		hinges.assign([records[best_a], records[best_b]])
-		hinge_indices[best_a] = true
-		hinge_indices[best_b] = true
-
-	var hinge_center := Vector3.ZERO
-	for record: Dictionary in hinges:
-		hinge_center += _joint_record_position(record)
-	hinge_center /= float(hinges.size())
-	var latch: Dictionary = {}
-	var farthest := maxf(0.34, horizontal_long * 0.34)
-	for index in records.size():
-		if hinge_indices.has(index):
-			continue
-		var position := _joint_record_position(records[index])
-		var distance := Vector2(position.x, position.z).distance_to(
-			Vector2(hinge_center.x, hinge_center.z)
-		)
-		if distance > farthest:
-			farthest = distance
-			latch = records[index]
-	return {"hinges": hinges, "latch": latch}
+	return VoxelMapImportPlanner.new().classify_door_joint_records(records, body_bounds)
 
 
 static func _joint_record_position(record: Dictionary) -> Vector3:
@@ -1058,7 +964,7 @@ static func _joint_record_position(record: Dictionary) -> Vector3:
 
 
 func _make_joint(attributes: Dictionary) -> Joint3D:
-	var limits := _vec3(attributes.get("limits", "0 0 0"))
+	var limits := _planner.parse_vec3(attributes.get("limits", "0 0 0"))
 	match attributes.get("type", "ball"):
 		"hinge":
 			var hinge := HingeJoint3D.new()
@@ -1191,43 +1097,15 @@ static func _slider_basis(basis: Basis) -> Basis:
 
 
 static func _rotation(text: String) -> Quaternion:
-	var parts := text.split(" ", false)
-	if parts.size() != 3:
-		return Quaternion.IDENTITY
-	# `QuatEulerRad` del conversor, tal cual: roll sobre X, yaw sobre Y, pitch sobre Z.
-	var roll := deg_to_rad(float(parts[0])) * 0.5
-	var yaw := deg_to_rad(float(parts[1])) * 0.5
-	var pitch := deg_to_rad(float(parts[2])) * 0.5
-	var c1 := cos(roll)
-	var s1 := sin(roll)
-	var c2 := cos(yaw)
-	var s2 := sin(yaw)
-	var c3 := cos(pitch)
-	var s3 := sin(pitch)
-	return Quaternion(
-		s1 * c2 * c3 + c1 * s2 * s3,
-		c1 * s2 * c3 + s1 * c2 * s3,
-		c1 * c2 * s3 - s1 * s2 * c3,
-		c1 * c2 * c3 - s1 * s2 * s3
-	)
+	return VoxelMapImportPlanner.new().parse_rotation(text)
 
 
 static func _vec3(text: String) -> Vector3:
-	var parts := text.split(" ", false)
-	if parts.size() < 2:
-		return Vector3.ZERO
-	return Vector3(
-		float(parts[0]), float(parts[1]), float(parts[2]) if parts.size() > 2 else 0.0
-	)
+	return VoxelMapImportPlanner.new().parse_vec3(text)
 
 
 static func _float_values(text: String, count: int) -> PackedFloat32Array:
-	var result := PackedFloat32Array()
-	result.resize(count)
-	var parts := text.split(" ", false)
-	for index in mini(count, parts.size()):
-		result[index] = float(parts[index])
-	return result
+	return VoxelMapImportPlanner.new().parse_float_values(text, count)
 
 
 func _palette_for(path: String) -> VoxelPalette:
@@ -1241,115 +1119,14 @@ func _palette_for(path: String) -> VoxelPalette:
 func _load_vox(path: String) -> Dictionary:
 	if _vox_cache.has(path):
 		return _vox_cache[path]
-	var result := {}
+	var parsed: Dictionary = _planner.parse_named_vox(path)
+	var result: Dictionary = parsed.get("models", {})
 	_vox_cache[path] = result
-	var file := FileAccess.open(path, FileAccess.READ)
-	if file == null:
+	if not bool(parsed.get("ok", false)):
 		push_warning("TeardownMapImporter: falta %s" % path)
 		_palette_cache[path] = VoxelPalette.new()
 		return result
-	var bytes := file.get_buffer(file.get_length())
-	file.close()
-	var colors := PackedColorArray()
-	colors.resize(256)
-	var material_attributes := {}
-	var imap := PackedByteArray()
-	var sizes: Array[Vector3i] = []
-	var payloads: Array[PackedByteArray] = []
-	var names: Array[String] = []
-	var pending := Vector3i.ZERO
-	var offset := 20
-	while offset + 12 <= bytes.size():
-		var chunk := bytes.slice(offset, offset + 4).get_string_from_ascii()
-		var size := bytes.decode_s32(offset + 4)
-		var start := offset + 12
-		if size < 0 or start + size > bytes.size():
-			break
-		match chunk:
-			"SIZE":
-				pending = Vector3i(
-					bytes.decode_s32(start), bytes.decode_s32(start + 4),
-					bytes.decode_s32(start + 8)
-				)
-			"XYZI":
-				var count := bytes.decode_s32(start)
-				sizes.append(pending)
-				payloads.append(bytes.slice(start + 4, start + 4 + mini(count, (size - 4) / 4) * 4))
-			"RGBA":
-				for index in mini(255, size / 4):
-					var at := start + index * 4
-					colors[index + 1] = Color8(
-						bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]
-					)
-			"IMAP":
-				imap = bytes.slice(start, start + mini(size, 256))
-			"MATL":
-				if size >= 8:
-					material_attributes[bytes.decode_s32(start)] = _read_dictionary(
-						bytes, {"value": start + 4}
-					)
-			"nTRN":
-				var cursor := {"value": start + 4}
-				var attributes := _read_dictionary(bytes, cursor)
-				if attributes.has("_name"):
-					names.append(attributes["_name"])
-		offset = start + size
-	_palette_cache[path] = TeardownPalette.build(colors, material_attributes, imap)
-	# El conversor escribe un nTRN raíz sin `_name` y luego uno con nombre por modelo, en el mismo
-	# orden en que escribió los SIZE/XYZI.
-	for index in mini(names.size(), payloads.size()):
-		result[names[index]] = {"size": sizes[index], "xyzi": payloads[index]}
+	_palette_cache[path] = TeardownPalette.build(
+		parsed.colors, parsed.material_attributes, parsed.imap
+	)
 	return result
-
-
-func _read_dictionary(bytes: PackedByteArray, cursor: Dictionary) -> Dictionary:
-	var result := {}
-	var count: int = maxi(0, _read_i32(bytes, cursor))
-	for _index in count:
-		# Las dos lecturas van a variables aparte a propósito: en `result[a()] = b()` GDScript
-		# evalúa primero la derecha, y sobre un cursor compartido eso intercambia clave y valor.
-		var key := _read_string(bytes, cursor)
-		var value := _read_string(bytes, cursor)
-		result[key] = value
-	return result
-
-
-func _read_string(bytes: PackedByteArray, cursor: Dictionary) -> String:
-	var length: int = maxi(0, _read_i32(bytes, cursor))
-	var start: int = cursor.value
-	cursor.value = mini(bytes.size(), start + length)
-	return bytes.slice(start, cursor.value).get_string_from_utf8()
-
-
-func _read_i32(bytes: PackedByteArray, cursor: Dictionary) -> int:
-	var position: int = cursor.value
-	if position + 4 > bytes.size():
-		cursor.value = bytes.size()
-		return 0
-	cursor.value = position + 4
-	return bytes.decode_s32(position)
-
-
-func _parse_xml(path: String) -> Dictionary:
-	var parser := XMLParser.new()
-	if parser.open(path) != OK:
-		push_error("TeardownMapImporter: no se pudo abrir %s" % path)
-		return {}
-	var root := {"tag": "", "attributes": {}, "children": []}
-	var stack: Array[Dictionary] = [root]
-	while parser.read() == OK:
-		match parser.get_node_type():
-			XMLParser.NODE_ELEMENT:
-				var attributes := {}
-				for index in parser.get_attribute_count():
-					attributes[parser.get_attribute_name(index)] = parser.get_attribute_value(index)
-				var element := {
-					"tag": parser.get_node_name(), "attributes": attributes, "children": [],
-				}
-				(stack[-1].children as Array).append(element)
-				if not parser.is_empty():
-					stack.append(element)
-			XMLParser.NODE_ELEMENT_END:
-				if stack.size() > 1:
-					stack.resize(stack.size() - 1)
-	return root.children[0] if not root.children.is_empty() else {}

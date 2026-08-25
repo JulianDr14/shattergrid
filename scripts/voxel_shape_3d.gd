@@ -31,6 +31,7 @@ var last_damage_native_ms := 0.0
 var last_damage_notify_ms := 0.0
 ## Última revisión cuya mutación atravesó este wrapper y emitió `voxels_changed`.
 var last_notified_revision := 0
+static var _damage_planner := VoxelDamagePlanner.new()
 
 
 static func from_asset(entry: Dictionary, source_palette: VoxelPalette) -> VoxelShape3D:
@@ -109,9 +110,9 @@ func damage_sphere(
 	if data == null or palette == null:
 		return {}
 	var native_started := Time.get_ticks_usec()
-	var result: Dictionary = data.damage_sphere_material(
-		world_to_voxel(world_center), radius / voxel_size, energy, palette.get_hardnesses(),
-		foundation_threshold
+	var result: Dictionary = _damage_planner.damage_shape(
+		data, world_to_voxel(world_center), radius / voxel_size, energy,
+		palette.get_hardnesses(), foundation_threshold, anchored, 16
 	)
 	last_damage_native_ms = (Time.get_ticks_usec() - native_started) / 1000.0
 	var notify_started := Time.get_ticks_usec()

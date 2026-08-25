@@ -24,7 +24,7 @@ func _body_near(world: VoxelWorld3D, probe: Vector3, radius: float) -> VoxelBody
 
 
 func _run() -> void:
-	var requested_boxes := 128
+	var requested_boxes := VoxelPhysicsBudget.new().max_boxes_per_body
 	for argument in OS.get_cmdline_user_args():
 		if argument.begins_with("--collapse-boxes="):
 			requested_boxes = maxi(1, int(argument.get_slice("=", 1)))

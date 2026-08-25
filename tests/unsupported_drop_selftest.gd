@@ -77,6 +77,11 @@ func _run() -> void:
 	var fallen := height - floating.get_shapes()[0].world_bounds().get_center().y
 	print("  la reja bajo %.2f m" % fallen)
 	_check(fallen > 0.3, "y ademas cae de verdad")
+	# Cada escenario necesita un espacio limpio. Dejar la reja dinámica del primero en el mismo
+	# World3D hacía que golpeara y destruyera los tubos del siguiente mientras se preparaba el test.
+	world.queue_free()
+	await process_frame
+	await physics_frame
 
 	# La cadena de tubos: seis secciones seguidas que se tocan. La primera se apoya en el suelo, asi
 	# que la cadena entera esta sostenida; si se corta el enlace, el resto tiene que caer.
@@ -87,22 +92,27 @@ func _run() -> void:
 	# Un pilar de roca de 4,4 m y una tuberia en voladizo: solo la primera seccion toca el pilar, las
 	# otras cinco cuelgan en el aire y solo llegan al suelo por la cadena.
 	_slab(world2, Vector3(0.0, 0.0, 0.0), Vector3i(6, 44, 6), 1000000.0)
-	var pipes: Array[VoxelBody3D] = []
+	# La coalescencia puede absorber los Bodies authored antes de esta comprobación. Las Shapes son
+	# la identidad estable; su Body actual se resuelve al usarla, igual que hace gameplay.
+	var pipe_shapes: Array[VoxelShape3D] = []
 	for section in 6:
-		pipes.append(_slab(world2, Vector3(0.55 + float(section) * 1.0, 2.0, 0.0),
-			Vector3i(10, 3, 6)))
+		var pipe := _slab(world2, Vector3(0.55 + float(section) * 1.0, 2.0, 0.0),
+			Vector3i(10, 3, 6))
+		pipe_shapes.append(pipe.get_shapes()[0])
 	for _frame in 6:
 		await physics_frame
 	var all_static := true
-	for pipe in pipes:
-		all_static = all_static and pipe.state == VoxelBody3D.State.STATIC
+	for pipe_shape in pipe_shapes:
+		var pipe_owner := world2._body_of(pipe_shape)
+		all_static = all_static and pipe_owner != null \
+			and pipe_owner.state == VoxelBody3D.State.STATIC
 	_check(all_static, "la cadena de tubos apoyada en la roca se queda quieta")
 
 	# Se parte el tercer tubo: los tres de la punta pierden el camino al suelo.
 	var tail_shapes: Array[VoxelShape3D] = []
 	for section in range(3, 6):
-		tail_shapes.append(pipes[section].get_shapes()[0])
-	var cut := pipes[2].get_shapes()[0]
+		tail_shapes.append(pipe_shapes[section])
+	var cut := pipe_shapes[2]
 	world2.damage_sphere(cut.world_bounds().get_center(), 1.2, 100.0)
 	var tail_dynamic := 0
 	var hosts := {}
@@ -115,7 +125,8 @@ func _run() -> void:
 	# Y caen juntos. Lo que la destruccion no ha separado sigue siendo una pieza: con un cuerpo por
 	# Shape, la cabeza de una torre se quedaba flotando mientras el mastil se iba.
 	_check(hosts.size() == 1, "como un solo cuerpo, no cada trozo por su lado (%d)" % hosts.size())
-	_check(pipes[0].state == VoxelBody3D.State.STATIC,
+	var root_pipe_owner := world2._body_of(pipe_shapes[0])
+	_check(root_pipe_owner != null and root_pipe_owner.state == VoxelBody3D.State.STATIC,
 		"el tubo que toca la roca sigue en su sitio")
 
 	# Lo mismo, pero lejos del origen. El test de contacto recibe la transformada relativa entre las
@@ -244,7 +255,7 @@ func _run() -> void:
 	# convertida en una sola caja, que ni cae bien ni se puede tocar.
 	world4.compound_boxes = 20_000
 	world4.awake_compound_boxes = 0
-	_check(world4._box_allowance_for_new_body() > 64,
+	_check(world4._box_allowance_for_new_body() == world4.physics_budget.max_boxes_per_body,
 		"un cuerpo que cae estrena colision con forma aunque los dormidos pasen del techo")
 
 	# Más larga que el antiguo límite fail-open de 32 Shapes. Una búsqueda inconclusa no puede

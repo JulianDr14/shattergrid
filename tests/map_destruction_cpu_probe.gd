@@ -29,6 +29,18 @@ func _run() -> void:
 	for _frame in 600:
 		world._process(1.0 / 60.0)
 	var world_process_average_us := (Time.get_ticks_usec() - process_started) / 600.0
+	var maintenance_started := Time.get_ticks_usec()
+	for _sample in 20:
+		world._enforce_physics_budget(false)
+	var budget_average_us := (Time.get_ticks_usec() - maintenance_started) / 20.0
+	maintenance_started = Time.get_ticks_usec()
+	for _sample in 2000:
+		world._update_metrics()
+	var metrics_average_us := (Time.get_ticks_usec() - maintenance_started) / 2000.0
+	maintenance_started = Time.get_ticks_usec()
+	for _sample in 2000:
+		world._refresh_awake_dynamic_grid()
+	var awake_grid_average_us := (Time.get_ticks_usec() - maintenance_started) / 2000.0
 	var largest: VoxelShape3D
 	var collision_blocks_current := 0
 	var collision_blocks_max4 := 0
@@ -88,6 +100,9 @@ func _run() -> void:
 		"collision_update_frames": collision_frames.size(),
 		"collision_update_max_ms": snappedf(collision_update_max_ms, 0.001),
 		"world_process_average_us": snappedf(world_process_average_us, 0.001),
+		"budget_average_us": snappedf(budget_average_us, 0.001),
+		"metrics_average_us": snappedf(metrics_average_us, 0.001),
+		"awake_grid_average_us": snappedf(awake_grid_average_us, 0.001),
 		"map_voxels": int(report.get("voxels", 0)),
 		"map_shapes": int(report.get("shapes", 0)),
 		"target_dimensions": largest.data.get_dimensions(),

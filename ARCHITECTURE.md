@@ -55,6 +55,37 @@ compila localmente para la arquitectura macOS del host; los binarios generados n
 volumen denso es canónico; la ocupación de macroceldas 8x8x8 es un dato derivado para DDA, dirty
 regions y colisiones.
 
+### Módulos nativos de runtime
+
+La extensión no replica `VoxelWorld3D` como otro monolito. Las rutas CPU puras se dividen por
+responsabilidad y los adaptadores GDScript conservan únicamente ownership y APIs de escena:
+
+- `VoxelRuntimeRegistry`: espejo incremental de Bodies/Shapes, métricas O(1), coherencia,
+  pendientes baked, lista de despiertos y planificación del presupuesto;
+- `VoxelDamagePlanner`: daño material, guard local de desconexión y selección de componentes que
+  deben materializarse;
+- `VoxelStructuralGraph`: grupos conexos y recorrido exacto hacia cimentación; las pruebas
+  geométricas siguen usando los índices nativos de `VoxelShapeData`;
+- `VoxelRopeSolver`: buffers Verlet, restricciones, sueño, rotura, tensión, consultas de colisión
+  batcheadas y arrays de malla;
+- `VoxelMapImportPlanner`: parseo XML/VOX, transformadas recursivas, límites y clasificación de
+  joints; produce datos, mientras el importador conserva el commit de Nodes;
+- `VoxelRopePhysicsBridge`: ejecuta los raycasts y aplica fuerzas desde una sola llamada nativa del
+  tick físico;
+- `VoxelTransformTracker`: resuelve IDs despiertos, da un frame de gracia al que se duerme y toma
+  transformadas interpoladas/bounds para renderer y sombras;
+- `VoxelCollisionInstaller`: crea `CollisionShape3D`, cajas y recursos cóncavos por lote;
+- `VoxelSupportPlanner`, `VoxelImpactQueue` y `VoxelCollisionHandoffQueue`: separan planificación
+  de soporte y las dos máquinas de estado que antes ocupaban `VoxelWorld3D`.
+
+Los kernels de datos (`VoxelRuntimeRegistry`, `VoxelDamagePlanner`, `VoxelStructuralGraph`,
+`VoxelRopeSolver` y `VoxelMapImportPlanner`) no llaman al SceneTree. Los bridges
+de escena también son `Resource`, pero acceden a Nodes, `PhysicsDirectSpaceState3D` o Jolt y por eso
+se invocan exclusivamente desde el hilo principal/physics tick. Esta separación sigue el contrato
+oficial de Godot: el SceneTree activo no es thread-safe y las operaciones directas de GPU pueden
+sincronizar. Jolt ya usa internamente el `WorkerThreadPool`; añadir otro pool alrededor del tick no
+aumenta ese paralelismo y sí introduce esperas y carreras.
+
 `VoxelPalette` admite 255 materiales y conserva color/opacidad, rugosidad, metalicidad, emisión,
 dureza, densidad, fricción y restitución. El renderer usa el índice real del voxel y la fila de
 paleta correspondiente a su Shape. El daño y la física leen las propiedades materiales desde la
@@ -152,10 +183,12 @@ porque editar celdas no cambia la caja exterior de la Shape. La reconstrucción 
 se ejecuta dentro de la llamada de daño. Los bloques sucios se deduplican y `VoxelWorld3D` entrega
 como máximo uno por frame a Jolt; el atlas visual permanece inmediato.
 
-La clasificación de componentes vive en C++ y recorre memoria contigua: toma un puntero de lectura
-al volumen, usa una cola `std::vector` y materializa cada `PackedInt32Array` una sola vez. El
-presupuesto global de física y el recuento de Bodies se ejecutan en el mantenimiento de 10 Hz, no
-dentro del disparo; durante ese intervalo rige una ventana temporal de 192 Bodies.
+La clasificación de componentes y su planificación viven en C++ y recorren memoria contigua: toman
+un puntero de lectura al volumen, usan una cola `std::vector` y materializan cada
+`PackedInt32Array` una sola vez. El
+presupuesto global de física y el recuento de Bodies se mantienen incrementalmente en
+`VoxelRuntimeRegistry`, no con un barrido GDScript dentro del disparo; durante ese intervalo rige
+una ventana temporal de 192 Bodies.
 Las Shapes dinámicas se consultan mediante una rejilla de 8 m; solo los Bodies despiertos actualizan
 sus celdas a 10 Hz. El mapa Lee pasa así de recorrer todos los props importados (unos 5 ms por
 disparo) a consultar únicamente las celdas solapadas (0,10-0,20 ms en la prueba final).
@@ -210,6 +243,12 @@ misma geometría y la actualización por macrocelda, pero deja que el broad phas
 lejanas. En la torre real de la presa, un colapso de 266 cajas pasó de 66,36 ms a 8,69 ms de física
 P95 sin reducir el compound ni alterar la destrucción.
 
+El límite normal por Body es 64 cajas. El constructor no rellena el volumen sobrante: sube el pitch
+y conserva un AABB ajustado por celda ocupada. En la sonda de colapso grande de Lee, bajar el techo
+de 128 a 64 convirtió 84 hijos efectivos en 28, mantuvo la caída estructural y redujo el P95 físico
+de 7,14 a 6,46 ms. Pedir 32 no simplificó más esa pieza y empeoró el P95, por lo que 64 es el punto
+medido, no un recorte arbitrario.
+
 El daño de un Body dinámico encola una sola reconstrucción de compound por frame. Transferir varias
 Shapes al mismo fragmento usa inserción por lotes y reconstruye al final, evitando el patrón O(n²)
 de rehacer el compound después de cada `add_voxel_shape`.
@@ -248,8 +287,11 @@ nativas como máximo) permite que una torre metálica los atraviese dañándolos
 revisión notificada, `VoxelBody3D` la última revisión de colisión y una `physics_generation` por
 reemplazo del Body Jolt. La caché de contactos valida revisión, generación y pose de ambos extremos.
 El snapshot del World informa `COHERENT`, `PENDING` o `DESYNC`; una mutación nativa que evitó el
-wrapper se diagnostica y programa un rebuild completo seguro. El mismo snapshot identifica la
-revisión canónica, la revisión de colisión y el primer consumidor atrasado.
+wrapper se diagnostica y programa un rebuild completo seguro. `VoxelRuntimeRegistry` retiene la
+referencia canónica de datos para detectar también escritores clandestinos, pero consulta
+pendientes mediante un `unordered_set`: se eliminó el antiguo patrón O(Shapes × cola baked). El
+mismo snapshot identifica la revisión canónica, la revisión de colisión y el primer consumidor
+atrasado.
 
 Joints, ropes y puertas ya no escriben un booleano compartido de persistencia. Cada constraint o
 endpoint adquiere una retención identificada; romper una no desprotege las demás. `body_split`

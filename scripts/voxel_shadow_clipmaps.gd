@@ -67,9 +67,8 @@ var _dynamic_bounds := {}
 var _tracked_dynamic := {}
 ## Solo las Shapes que ahora mismo son dinamicas.
 var _dynamic_keys := {}
-## Cuerpos que estaban despiertos el frame anterior, para darles un frame de gracia y rasterizar su
-## postura final cuando se duermen.
-var _was_awake := {}
+var _transform_tracker := VoxelTransformTracker.new()
+var _movable_bounds := {}
 var _shape_cache: Array[VoxelShape3D] = []
 var _shape_cache_frame := -1
 ## Quien toca una caja, sin barrer las 2312 Shapes del mapa en cada region.
@@ -318,7 +317,8 @@ func _update_dynamic_shapes() -> void:
 		if interval > 1 and _dynamic_bounds.has(key) \
 				and Engine.get_process_frames() % interval != phase:
 			continue
-		var current := shape.world_bounds()
+		var current: AABB = _movable_bounds[key] \
+			if _movable_bounds.has(key) else shape.world_bounds()
 		var previous: AABB = _dynamic_bounds.get(key, current)
 		var was_dynamic := bool(_tracked_dynamic.get(key, false))
 		var needs_refresh := dynamic != was_dynamic \
@@ -499,22 +499,18 @@ func _cell_size(level: int) -> float:
 ## Solo lo que puede haberse movido desde el frame anterior.
 func _movable_shapes() -> Array[VoxelShape3D]:
 	var result: Array[VoxelShape3D] = []
-	var awake := {}
-	for body in _world.get_dynamic_bodies():
-		if not is_instance_valid(body):
+	_movable_bounds.clear()
+	if _world == null:
+		return result
+	var snapshot: Dictionary = _transform_tracker.collect(_world.get_awake_dynamic_body_ids())
+	var snapshot_shapes: Array = snapshot.shapes
+	var bounds: Array = snapshot.bounds
+	for index in mini(snapshot_shapes.size(), bounds.size()):
+		var shape := snapshot_shapes[index] as VoxelShape3D
+		if shape == null:
 			continue
-		# Un cuerpo dormido no se ha movido, asi que preguntarle sus bounds es tiempo tirado. Lee
-		# importa cientos de props dinamicos congelados hasta que los tocas: mirarlos todos cada
-		# frame eran 8-10 ms fijos, la mitad del presupuesto a 60 fps, sin que se moviera ninguno.
-		# Se le da un frame de gracia al que acaba de dormirse para rasterizar su postura final.
-		var body_key := body.get_instance_id()
-		if not body.is_awake() and not _was_awake.has(body_key):
-			continue
-		awake[body_key] = true
-		for shape in body.get_shapes():
-			if shape.voxel_count() > 0:
-				result.append(shape)
-	_was_awake = awake
+		result.append(shape)
+		_movable_bounds[shape.get_instance_id()] = bounds[index]
 	return result
 
 

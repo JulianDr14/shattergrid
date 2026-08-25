@@ -28,6 +28,18 @@ add_library(shattergrid_core SHARED
 	native/src/voxel_brick_pool.cpp
 	native/src/voxel_palette.cpp
 	native/src/voxel_settings.cpp
+	native/src/voxel_runtime_registry.cpp
+	native/src/voxel_rope_solver.cpp
+	native/src/voxel_rope_mesh.cpp
+	native/src/voxel_rope_physics_bridge.cpp
+	native/src/voxel_transform_tracker.cpp
+	native/src/voxel_collision_installer.cpp
+	native/src/voxel_map_import_planner.cpp
+	native/src/voxel_impact_queue.cpp
+	native/src/voxel_collision_handoff_queue.cpp
+	native/src/voxel_support_planner.cpp
+	native/src/voxel_structural_graph.cpp
+	native/src/voxel_damage_planner.cpp
 )
 
 target_include_directories(shattergrid_core PRIVATE native/include)

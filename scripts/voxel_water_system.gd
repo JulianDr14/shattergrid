@@ -15,6 +15,12 @@ const SHORE_WIDTH := 0.48
 const RIPPLE_CAPACITY := 24
 const WATER_PHYSICS_INTERVAL := 1.0 / 30.0
 const MAX_SPLASH_DROPS := 36
+const WATER_DENSITY_KG_M3 := 1000.0
+const MAX_BUOYANCY_WEIGHT_RATIO := 2.0
+## Los vehículos voxel son carrocerías abiertas: al entrar agua no desplazan para siempre toda su
+## caja exterior como un casco sellado. El tope garantiza que incluso completamente sumergidos
+## conserven peso descendente; props ligeros y madera siguen usando Arquímedes sin este límite.
+const VEHICLE_MAX_BUOYANCY_WEIGHT_RATIO := 0.55
 
 var _vertices := PackedVector3Array()
 var _normals := PackedVector3Array()
@@ -182,9 +188,8 @@ func _physics_process(delta: float) -> void:
 		return
 	var step := _water_physics_elapsed
 	_water_physics_elapsed = 0.0
-	for body: VoxelBody3D in _world.get_dynamic_bodies():
-		if body == null or not is_instance_valid(body) or not body.is_awake() \
-				or body.collision_handoff_pending:
+	for body: VoxelBody3D in _world.get_awake_dynamic_bodies():
+		if body.collision_handoff_pending:
 			continue
 		_apply_body_water(body, step)
 
@@ -202,6 +207,8 @@ func _apply_body_water(body: VoxelBody3D, delta: float) -> void:
 	var key := body.get_instance_id()
 	if sample.is_empty():
 		_body_wet[key] = false
+		if rigid is VoxelVehicle3D:
+			(rigid as VoxelVehicle3D).update_water_submersion(0.0, -INF)
 		return
 	var surface_y := float(sample.surface_y)
 	var bottom := bounds.position.y
@@ -212,8 +219,12 @@ func _apply_body_water(body: VoxelBody3D, delta: float) -> void:
 	)
 	if not overlaps:
 		_body_wet[key] = false
+		if rigid is VoxelVehicle3D:
+			(rigid as VoxelVehicle3D).update_water_submersion(0.0, surface_y)
 		return
 	var submerged := clampf((surface_y - bottom) / maxf(bounds.size.y, 0.12), 0.0, 1.0)
+	if rigid is VoxelVehicle3D:
+		(rigid as VoxelVehicle3D).update_water_submersion(submerged, surface_y)
 	var was_wet := bool(_body_wet.get(key, false))
 	if not was_wet and (rigid.linear_velocity.y < -0.8 or rigid.linear_velocity.length() > 2.2):
 		emit_splash(
@@ -222,10 +233,28 @@ func _apply_body_water(body: VoxelBody3D, delta: float) -> void:
 		)
 	_body_wet[key] = true
 	var gravity := float(ProjectSettings.get_setting("physics/3d/default_gravity", 9.8))
-	rigid.apply_central_impulse(Vector3.UP * rigid.mass * gravity * submerged * delta * 1.05)
+	var submerged_height := minf(maxf(surface_y - bottom, 0.0), bounds.size.y)
+	var displaced_volume := maxf(0.0, bounds.size.x * bounds.size.z * submerged_height)
+	var buoyancy := buoyancy_force_newtons(
+		displaced_volume, rigid.mass, gravity, rigid is VoxelVehicle3D
+	)
+	rigid.apply_central_impulse(Vector3.UP * buoyancy * delta)
 	var velocity := rigid.linear_velocity
 	var drag_fraction := minf(0.82, submerged * delta * (1.4 + velocity.length() * 0.22))
 	rigid.apply_central_impulse(-velocity * rigid.mass * drag_fraction)
+
+
+static func buoyancy_force_newtons(
+	displaced_volume: float, body_mass: float, gravity: float, is_vehicle: bool
+) -> float:
+	var force := maxf(0.0, displaced_volume) * WATER_DENSITY_KG_M3 * maxf(0.0, gravity)
+	var weight := maxf(0.0, body_mass) * maxf(0.0, gravity)
+	force = minf(
+		force,
+		weight * (VEHICLE_MAX_BUOYANCY_WEIGHT_RATIO if is_vehicle \
+			else MAX_BUOYANCY_WEIGHT_RATIO)
+	)
+	return force
 
 
 func emit_splash(position: Vector3, intensity := 1.0) -> void:

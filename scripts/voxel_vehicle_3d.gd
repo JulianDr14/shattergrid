@@ -7,6 +7,7 @@ extends VehicleBody3D
 ## baratos en un unico Body, no cuatro RigidBodies y joints adicionales por coche.
 
 signal driver_changed(vehicle: VoxelVehicle3D, occupied: bool)
+signal flooded(vehicle: VoxelVehicle3D)
 
 const GROUP := "voxel_vehicles"
 const ENTER_DISTANCE := 3.6
@@ -20,7 +21,11 @@ const IMPACT_COOLDOWN_FRAMES := 12
 ## eso elevó el paso físico medido hasta 41,5 ms aun después de detenerse contra un obstáculo.
 const COLLISION_BOX_BUDGET := 16
 const CCD_MIN_SPEED := 14.0
-const SHADOW_UPDATE_INTERVAL_FRAMES := 4
+## La ocupación de sombra de carrocería+ruedas se recocina a 10 Hz. La geometría visible conserva
+## interpolación por frame; bajar esta tarea CPU de 15 a 10 Hz recorta un tercio de su coste medio.
+const SHADOW_UPDATE_INTERVAL_FRAMES := 6
+const FLOOD_SUBMERSION_RATIO := 0.58
+const FLOOD_SEAT_MARGIN := 0.12
 
 var voxel_owner: VoxelBody3D
 var display_name := "vehiculo"
@@ -50,6 +55,7 @@ var _override_throttle := 0.0
 var _override_steer := 0.0
 var _override_handbrake := false
 var _last_mass := -1.0
+var _water_disabled := false
 
 
 func configure(owner: VoxelBody3D, descriptor: Dictionary) -> void:
@@ -73,7 +79,7 @@ func configure(owner: VoxelBody3D, descriptor: Dictionary) -> void:
 	steer_speed = lerpf(3.4, 6.2, steer_assist)
 	_visual_body = descriptor.get("visual_body") as VoxelBody3D
 	# La transformada visible sigue subiendo cada frame. Solo la ocupación de sombra volumétrica se
-	# actualiza a 15 Hz: rasterizar carrocería+ruedas en los cuatro niveles medía 5,7 ms/frame en Lee.
+	# actualiza a 10 Hz: rasterizar carrocería+ruedas en los cuatro niveles medía 5,7 ms por refresco.
 	# Ambos Bodies comparten fase para que sus cinco cajas se fusionen en una sola región pequeña.
 	var shadow_phase := get_instance_id() % SHADOW_UPDATE_INTERVAL_FRAMES
 	voxel_owner.set_meta("voxel_shadow_interval_frames", SHADOW_UPDATE_INTERVAL_FRAMES)
@@ -194,7 +200,7 @@ func _setup_projected_light(light: Light3D, source_transform: Transform3D, cone:
 
 
 func set_driver(driver: Node3D) -> bool:
-	if driver == null or _driver != null or _wheels.size() < 2:
+	if driver == null or _driver != null or _wheels.size() < 2 or _water_disabled:
 		return false
 	_driver = driver
 	set_physics_process(true)
@@ -202,6 +208,7 @@ func set_driver(driver: Node3D) -> bool:
 	sleeping = false
 	if voxel_owner != null:
 		voxel_owner.acquire_physics_hold("vehicle_driver:%d" % get_instance_id())
+	_wake_attached_bodies()
 	_set_lights(true, false, false)
 	driver_changed.emit(self, true)
 	return true
@@ -212,7 +219,7 @@ func clear_driver(driver: Node3D = null) -> void:
 		return
 	_driver = null
 	engine_force = 0.0
-	brake = coast_brake
+	brake = 0.0 if _water_disabled else coast_brake
 	can_sleep = true
 	if voxel_owner != null and is_instance_valid(voxel_owner):
 		voxel_owner.release_physics_hold("vehicle_driver:%d" % get_instance_id())
@@ -225,7 +232,7 @@ func has_driver() -> bool:
 
 
 func can_enter(point: Vector3, maximum_distance := ENTER_DISTANCE) -> bool:
-	return not has_driver() and _wheels.size() >= 2 \
+	return not _water_disabled and not has_driver() and _wheels.size() >= 2 \
 		and get_seat_position().distance_to(point) <= maximum_distance
 
 
@@ -234,17 +241,88 @@ func get_seat_position() -> Vector3:
 
 
 func get_exit_position() -> Vector3:
-	return get_seat_position() + global_basis.x.normalized() * 2.1 + Vector3.UP * 0.25
+	return get_exit_candidates()[0]
+
+
+func get_exit_candidates() -> PackedVector3Array:
+	var right := Vector3(global_basis.x.x, 0.0, global_basis.x.z)
+	if right.length_squared() < 0.01:
+		right = Vector3.RIGHT
+	right = right.normalized()
+	var forward := Vector3(global_basis.z.x, 0.0, global_basis.z.z)
+	if forward.length_squared() < 0.01:
+		forward = Vector3.FORWARD
+	forward = forward.normalized()
+	var bounds := get_world_bounds()
+	var radius := maxf(2.1, maxf(bounds.size.x, bounds.size.z) * 0.5 + 0.75)
+	var origin := Vector3(bounds.get_center().x, bounds.end.y + 1.8, bounds.get_center().z)
+	return PackedVector3Array([
+		origin + right * radius,
+		origin - right * radius,
+		origin + forward * radius,
+		origin - forward * radius,
+		origin + (right + forward).normalized() * radius,
+		origin + (right - forward).normalized() * radius,
+		origin,
+	])
+
+
+func get_world_bounds() -> AABB:
+	if voxel_owner != null and is_instance_valid(voxel_owner):
+		var shapes := voxel_owner.get_shapes()
+		if not shapes.is_empty():
+			var bounds := shapes[0].world_bounds()
+			for index in range(1, shapes.size()):
+				bounds = bounds.merge(shapes[index].world_bounds())
+			return bounds
+	return AABB(global_position - Vector3.ONE, Vector3.ONE * 2.0)
+
+
+func update_water_submersion(submerged_ratio: float, surface_y: float) -> void:
+	if _water_disabled or not should_flood(
+		submerged_ratio, get_seat_position().y, surface_y
+	):
+		return
+	_water_disabled = true
+	linear_damp = maxf(linear_damp, 2.2)
+	angular_damp = maxf(angular_damp, 5.0)
+	_apply_flooded_running_gear()
+	_set_lights(false, false, false)
+	set_physics_process(true)
+	flooded.emit(self)
+	if has_driver() and _driver.has_method("on_vehicle_flooded"):
+		_driver.call_deferred("on_vehicle_flooded", self)
+
+
+func is_water_disabled() -> bool:
+	return _water_disabled
+
+
+static func should_flood(submerged_ratio: float, seat_y: float, surface_y: float) -> bool:
+	return submerged_ratio >= FLOOD_SUBMERSION_RATIO \
+		or surface_y >= seat_y - FLOOD_SEAT_MARGIN
 
 
 func get_camera_target() -> Vector3:
 	return get_seat_position() + Vector3.UP * 0.35
 
 
+## La cámara y el renderer DDA viven en el reloj de dibujado. Godot interpola el VehicleBody para
+## dibujarlo, pero consultar `global_transform` desde `_process` devuelve el último tick físico y
+## vuelve a introducir el escalonado que la interpolación intenta eliminar. Estas variantes reciben
+## una única muestra interpolada y derivan de ella todos los puntos de cámara coherentemente.
+func get_camera_target_from_transform(vehicle_transform: Transform3D) -> Vector3:
+	return vehicle_transform * _seat_local + Vector3.UP * 0.35
+
+
 func get_driver_view_position() -> Vector3:
 	# `player` ya suele estar a la altura de la cabeza en los XML de Teardown (1,25–2,2 m).
 	# Un pequeño avance evita z-fighting con el respaldo sin colocar la vista sobre el capot.
 	return get_seat_position() + forward_direction() * 0.08
+
+
+func get_driver_view_from_transform(vehicle_transform: Transform3D) -> Vector3:
+	return vehicle_transform * _seat_local + vehicle_transform.basis.z.normalized() * 0.08
 
 
 func get_camera_collision_rids() -> Array[RID]:
@@ -314,6 +392,12 @@ func park_after_sleep() -> void:
 
 func _physics_process(delta: float) -> void:
 	_retune_for_mass(false)
+	if _water_disabled:
+		_apply_flooded_running_gear()
+		steering = move_toward(steering, 0.0, steer_speed * delta)
+		_set_lights(false, false, false)
+		_sync_wheel_visuals()
+		return
 	if not has_driver() and not _control_override:
 		engine_force = 0.0
 		brake = coast_brake
@@ -354,6 +438,20 @@ func _on_sleeping_state_changed() -> void:
 	set_physics_process(has_driver() or _control_override or not sleeping)
 
 
+## Un remolque authored es otro RigidBody unido al tractor por un joint. Al importar, ambos nacen
+## dormidos para no gastar solver; despertar solo el VehicleBody no garantiza que todos los backends
+## activen de inmediato el resto de la isla. El recorrido ocurre una sola vez al entrar, no por tick.
+func _wake_attached_bodies() -> void:
+	if voxel_owner == null or not is_instance_valid(voxel_owner):
+		return
+	var world := voxel_owner.get_parent()
+	if world == null:
+		return
+	var joints := world.get_node_or_null("TeardownJoints") as VoxelJoints
+	if joints != null:
+		joints.wake_connected(voxel_owner)
+
+
 func _sync_wheel_visuals() -> void:
 	if _wheel_visuals.is_empty():
 		return
@@ -365,8 +463,14 @@ func _sync_wheel_visuals() -> void:
 	if not moving:
 		return
 	for record: Dictionary in _wheel_visuals:
-		var wheel := record.wheel as VehicleWheel3D
-		var shape := record.shape as VoxelShape3D
+		# Los visuales pertenecen al Body voxel y pueden salir de forma diferida durante teardown. Un
+		# cast tipado de un Object ya liberado falla antes de que `is_instance_valid` pueda protegerlo.
+		var wheel_variant: Variant = record.get("wheel")
+		var shape_variant: Variant = record.get("shape")
+		if not is_instance_valid(wheel_variant) or not is_instance_valid(shape_variant):
+			continue
+		var wheel := wheel_variant as VehicleWheel3D
+		var shape := shape_variant as VoxelShape3D
 		if is_instance_valid(wheel) and is_instance_valid(shape):
 			shape.global_transform = wheel.global_transform * (record.local as Transform3D)
 
@@ -388,12 +492,23 @@ func _retune_for_mass(force := false) -> void:
 	coast_brake = clampf(mass * 0.0045, 5.0, 24.0)
 	var per_wheel := mass * 9.8 / maxf(1.0, float(_wheels.size()))
 	for wheel in _wheels:
-		wheel.suspension_max_force = maxf(6000.0, per_wheel * 4.0)
+		wheel.suspension_max_force = 0.0 if _water_disabled \
+			else maxf(6000.0, per_wheel * 4.0)
+
+
+func _apply_flooded_running_gear() -> void:
+	engine_force = 0.0
+	brake = 0.0
+	for wheel in _wheels:
+		# Un raycast de suspensión activo contra el lecho pelea con el peso y la flotación de una
+		# carrocería inundada. Sin fuerza ni agarre, el compound se apoya como cualquier RigidBody.
+		wheel.suspension_max_force = 0.0
+		wheel.wheel_friction_slip = 0.05
 
 
 func _integrate_forces(state: PhysicsDirectBodyState3D) -> void:
 	if voxel_owner == null or not is_instance_valid(voxel_owner) \
-			or voxel_owner.collision_handoff_pending:
+			or voxel_owner.collision_handoff_pending or _water_disabled:
 		return
 	if state.get_contact_count() == 0:
 		return

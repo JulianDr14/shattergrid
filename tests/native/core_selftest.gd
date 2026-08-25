@@ -43,7 +43,7 @@ func _init() -> void:
 
 	var physics_budget := VoxelPhysicsBudget.new()
 	var renderer_settings := VoxelRendererSettings.new()
-	if physics_budget.max_boxes_per_body != 128 \
+	if physics_budget.max_boxes_per_body != 64 \
 		or renderer_settings.clipmap_levels != 4:
 		printerr("VOXEL_NATIVE_SETTINGS_FAIL")
 		quit(1)

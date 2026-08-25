@@ -35,12 +35,7 @@ func _run() -> void:
 	# Peor caso: los 79 tramos vivos, simulando y reconstruyendo la malla cada frame.
 	# Empujados de verdad: marcarlos despiertos sin moverlos los dormia a los 20 frames y la medida
 	# salia falsa (mas barata que el caso real de cuatro cables oscilando).
-	for span in ropes._spans:
-		span.awake = true
-		span.still = 0
-		for index in range(int(span.start) + 1, int(span.start) + int(span.count) - 1):
-			ropes._previous[index] -= Vector3(0.0, 0.0, 0.02)
-	ropes._awake = ropes.span_count()
+	ropes.force_all_awake_for_probe(Vector3(0.0, 0.0, 0.02))
 	var busy := Time.get_ticks_usec()
 	for _step in 120:
 		ropes._physics_process(1.0 / 60.0)
@@ -49,9 +44,7 @@ func _run() -> void:
 		ropes.span_count() * (VoxelRopes.SEGMENTS + 1), VoxelRopes.ITERATIONS])
 
 	# Y lo que de verdad pasa: una explosion en medio del mapa.
-	for span in ropes._spans:
-		span.awake = false
-	ropes._awake = 0
+	ropes.sleep_all_for_probe()
 	var spawn := Vector3(-64.4, 3.0, -81.0)
 	ropes.on_impact(spawn, 1.0)
 	print("  una explosion despierta %d de %d tramos" % [ropes.awake_count(), ropes.span_count()])

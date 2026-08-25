@@ -46,11 +46,13 @@ var damage_detach_ms := 0.0
 var damage_body_ms := 0.0
 var damage_fragments := 0
 var _damage_grounded_by_shape := {}
-## Cuantos cuerpos rigidos se crean como mucho en un frame. Ver `_spawn_fragment`.
-const FRAGMENTS_PER_FRAME := 3
+## Cuántos cuerpos rígidos se crean como mucho en un frame. Dos conserva respuesta inmediata y
+## reparte el tercero: junto al compound de 64 cajas bajó el frame P95 de destrucción de 41,03 a
+## 35,69 ms y la ventana de impacto de 45,58 a 41,27 ms en Lee.
+const FRAGMENTS_PER_FRAME := 2
 var _pending_fragments: Array[Dictionary] = []
 var _pending_support_checks := {}
-var _collision_handoffs: Array[Dictionary] = []
+var _collision_handoffs := VoxelCollisionHandoffQueue.new()
 var _next_detachment_transaction := 1
 var _active_damage_epoch := 0
 var _pending_structural_coalesce := {}
@@ -86,12 +88,15 @@ var _baked_collision_priority_elapsed := 0.0
 var _burst_budget_pending := false
 var _maintenance_elapsed := 0.0
 var _body_cleanup_elapsed := 0.0
-var _pending_physics_impacts: Array[Dictionary] = []
-var _pending_physics_impact_keys := {}
+var _physics_impact_queue := VoxelImpactQueue.new()
 var _motion_contact_cooldown := {}
 var _motion_scan_elapsed := 0.0
 var _particle_pool: VoxelParticlePool
 var _diagnostics: Label
+var _runtime_registry := VoxelRuntimeRegistry.new()
+var _structural_graph := VoxelStructuralGraph.new()
+var _support_planner := VoxelSupportPlanner.new()
+var _damage_planner := VoxelDamagePlanner.new()
 
 const IDLE_MAINTENANCE_INTERVAL := 0.25
 const ACTIVE_MAINTENANCE_INTERVAL := 0.10
@@ -144,10 +149,9 @@ func ensure_physics_budget() -> VoxelPhysicsBudget:
 func queue_transition_collision_handoff(body: VoxelBody3D) -> void:
 	if body == null or not is_instance_valid(body) or not body.collision_handoff_pending:
 		return
-	for ticket: Dictionary in _collision_handoffs:
-		if ticket.get("fragment") == body:
-			return
-	_collision_handoffs.append({
+	if _collision_handoffs.contains_fragment(body):
+		return
+	_collision_handoffs.enqueue({
 		"transaction": _next_detachment_transaction,
 		"fragment": body,
 		"source_body": null,
@@ -186,9 +190,12 @@ func register_body(body: VoxelBody3D) -> void:
 	if body.state == VoxelBody3D.State.DYNAMIC:
 		_dynamic_bodies.append(body)
 	body.body_state_changed.connect(_on_body_state_changed)
+	body.runtime_state_changed.connect(_on_runtime_state_changed)
 	for shape in body.get_shapes():
 		register_shape(shape)
 	_capture_weld_baseline(body)
+	_bind_runtime_sleep_signal(body)
+	_sync_runtime_body(body)
 
 
 ## Que Shapes de un mismo cuerpo se tocaban ANTES de que nadie las tocase. Dos que nunca se tocaron
@@ -215,6 +222,10 @@ func register_shape(shape: VoxelShape3D) -> void:
 		_index_static_shape(shape)
 	if not shape.voxels_changed.is_connected(_on_shape_changed.bind(shape)):
 		shape.voxels_changed.connect(_on_shape_changed.bind(shape))
+	if body != null:
+		# Algunos importadores registran el Body antes de añadir todas sus Shapes (ruedas visuales del
+		# vehículo, por ejemplo). Actualizar también su total evita clasificarlo como vacío más tarde.
+		_sync_runtime_body(body)
 
 
 func unregister_body(body: VoxelBody3D) -> void:
@@ -239,9 +250,12 @@ func unregister_body(body: VoxelBody3D) -> void:
 	_collision_rebuild_queue.erase(body)
 	if body.body_state_changed.is_connected(_on_body_state_changed):
 		body.body_state_changed.disconnect(_on_body_state_changed)
+	if body.runtime_state_changed.is_connected(_on_runtime_state_changed):
+		body.runtime_state_changed.disconnect(_on_runtime_state_changed)
 	for shape in body.get_shapes():
 		_cancel_baked_collision(shape)
 		_unregister_shape_spatial(shape)
+		_runtime_registry.remove_shape(shape.get_instance_id())
 		_foundation_cache.erase(shape.get_instance_id())
 		_weld_baseline.erase(shape.get_instance_id())
 		_desync_recovery_queued.erase(shape.get_instance_id())
@@ -256,20 +270,9 @@ func unregister_body(body: VoxelBody3D) -> void:
 			pending.source_body = new_owner
 		else:
 			_pending_fragments.remove_at(index)
-	for index in range(_collision_handoffs.size() - 1, -1, -1):
-		var handoff: Dictionary = _collision_handoffs[index]
-		if handoff.get("fragment") == body:
-			_collision_handoffs.remove_at(index)
-			continue
-		if handoff.get("source_body") == body:
-			handoff["source_body"] = null
-			handoff["source_shape"] = null
-			handoff["source_revision"] = 0
-		var live_absorbed: Array = []
-		for absorbed_variant: Variant in handoff.get("absorbed", []):
-			if absorbed_variant != body and is_instance_valid(absorbed_variant):
-				live_absorbed.append(absorbed_variant)
-		handoff["absorbed"] = live_absorbed
+	_collision_handoffs.remove_body(body)
+	_runtime_registry.remove_body(body.get_instance_id())
+	_apply_runtime_metrics()
 
 
 ## Colision estatica bajo demanda. El mapa entero cuesta 15,5 s y el 95 % es geometria donde el
@@ -278,6 +281,23 @@ func unregister_body(body: VoxelBody3D) -> void:
 ## Los cuerpos que la clipmap tiene que vigilar cada frame. El resto son estaticos y no se mueven.
 func get_dynamic_bodies() -> Array[VoxelBody3D]:
 	return _dynamic_bodies
+
+
+## Vista incremental para consumidores por frame. Evita que agua, clipmaps y rejilla recorran todos
+## los props dormidos solo para descartarlos inmediatamente.
+func get_awake_dynamic_bodies() -> Array[VoxelBody3D]:
+	var result: Array[VoxelBody3D] = []
+	for body_id: int in _runtime_registry.get_awake_body_ids():
+		var body := instance_from_id(body_id) as VoxelBody3D
+		if body != null and is_instance_valid(body) and body.state == VoxelBody3D.State.DYNAMIC:
+			result.append(body)
+	return result
+
+
+## IDs directos para consumidores nativos por frame. Evita reconstruir Arrays de Nodes en
+## GDScript antes de que el tracker vuelva a recorrerlos.
+func get_awake_dynamic_body_ids() -> PackedInt64Array:
+	return _runtime_registry.get_awake_body_ids()
 
 
 func queue_collision_rebuild(body: VoxelBody3D) -> void:
@@ -311,6 +331,8 @@ func queue_baked_static_collision(
 		"distance_squared": INF,
 	})
 	_baked_collision_pending_blocks += records.size()
+	_runtime_registry.set_baked_collision_pending(shape.get_instance_id(), true)
+	_sync_runtime_shape(shape, body)
 
 
 ## Instala sincrónicamente solo la zona en la que el jugador puede aterrizar al aparecer. Devuelve
@@ -323,6 +345,8 @@ func prime_baked_static_collision(center: Vector3, radius: float) -> Dictionary:
 		var shape := entry.shape as VoxelShape3D
 		var body := entry.body as VoxelBody3D
 		if not is_instance_valid(shape) or not is_instance_valid(body):
+			if is_instance_valid(shape):
+				_runtime_registry.set_baked_collision_pending(shape.get_instance_id(), false)
 			_baked_collision_pending_blocks -= (entry.records as Array).size() - int(entry.cursor)
 			_baked_collision_queue.remove_at(index)
 			continue
@@ -336,6 +360,8 @@ func prime_baked_static_collision(center: Vector3, radius: float) -> Dictionary:
 		installed += remaining.size()
 		_baked_collision_pending_blocks -= remaining.size()
 		_baked_collision_queue.remove_at(index)
+		_runtime_registry.set_baked_collision_pending(shape.get_instance_id(), false)
+		_sync_runtime_body(body)
 	_prioritize_baked_collision(center)
 	return {
 		"blocks": installed,
@@ -488,21 +514,8 @@ func damage_sphere(
 		var created: Array[VoxelBody3D] = []
 		# Perder material de raíz exige reclasificar aunque quede una sola isla; contener roca en otra
 		# zona no. Forzar el flood-fill en cada cráter superficial del terreno costaba 107 ms.
-		var should_classify := shape.anchored or removed_foundation > 0
-		if not should_classify:
-			var guard_started := Time.get_ticks_usec()
-			var local_cut := shape.data.damage_may_disconnect_6(
-				damage.dirty_min, damage.dirty_max, 16
-			)
-			# Un resultado positivo del guard local es conservador: dos lados pueden volver a unirse
-			# fuera de su ventana. El grafo de macroceldas resuelve ese caso exactamente sin
-			# materializar el volumen completo.
-			should_classify = local_cut and shape.data.damage_may_disconnect_6_indexed(
-				damage.dirty_min, damage.dirty_max
-			)
-			damage_connectivity_guard_ms += (
-				Time.get_ticks_usec() - guard_started
-			) / 1000.0
+		var should_classify := bool(damage.get("should_classify", false))
+		damage_connectivity_guard_ms += float(damage.get("guard_usec", 0)) / 1000.0
 		if should_classify:
 			created = _split_disconnected(body, shape, center, radius)
 			# `_split_disconnected` ya decidió todas las componentes afectadas de esta Shape y sus
@@ -589,30 +602,9 @@ func queue_physics_impact(
 	# Descartarlos aquí evita incluso construir la clave/cola en cada bache de la carretera.
 	if source.get_physics_body() is VoxelVehicle3D and target == null:
 		return
-	var source_id := source.get_instance_id()
-	var target_id := target.get_instance_id() if target != null else (
-		collider.get_instance_id() if collider != null else 0
+	_physics_impact_queue.enqueue(
+		source, target, collider, point, impulse, relative_speed, MAX_PENDING_PHYSICS_IMPACTS
 	)
-	var low := mini(source_id, target_id)
-	var high := maxi(source_id, target_id)
-	var cell := Vector3i((point / 0.35).floor())
-	var key := "%d:%d:%d:%d:%d" % [low, high, cell.x, cell.y, cell.z]
-	if _pending_physics_impact_keys.has(key):
-		var existing := int(_pending_physics_impact_keys[key])
-		if existing >= 0 and existing < _pending_physics_impacts.size() \
-				and impulse > float(_pending_physics_impacts[existing].impulse):
-			_pending_physics_impacts[existing] = {
-				"key": key, "source": source, "target": target, "point": point,
-				"impulse": impulse, "speed": relative_speed,
-			}
-		return
-	if _pending_physics_impacts.size() >= MAX_PENDING_PHYSICS_IMPACTS:
-		return
-	_pending_physics_impact_keys[key] = _pending_physics_impacts.size()
-	_pending_physics_impacts.append({
-		"key": key, "source": source, "target": target, "point": point,
-		"impulse": impulse, "speed": relative_speed,
-	})
 
 
 static func _voxel_body_from_collision_object(collider: Object) -> VoxelBody3D:
@@ -627,16 +619,18 @@ static func _voxel_body_from_collision_object(collider: Object) -> VoxelBody3D:
 func _process_physics_impacts() -> void:
 	var processed := 0
 	var frame_damage_ms := 0.0
-	while processed < PHYSICS_IMPACTS_PER_FRAME and not _pending_physics_impacts.is_empty():
-		var record: Dictionary = _pending_physics_impacts.pop_front()
-		_pending_physics_impact_keys.erase(String(record.key))
-		# Los índices de los elementos que quedan cambiaron al hacer pop_front.
-		for index in _pending_physics_impacts.size():
-			_pending_physics_impact_keys[String(_pending_physics_impacts[index].key)] = index
-		var source := record.source as VoxelBody3D
-		var target := record.target as VoxelBody3D
-		if source == null or not is_instance_valid(source):
+	while processed < PHYSICS_IMPACTS_PER_FRAME and not _physics_impact_queue.is_empty():
+		var record: Dictionary = _physics_impact_queue.pop_front()
+		# Un impacto puede esperar varios frames; mientras tanto la destrucción puede retirar el Body.
+		# Castear directamente el Variant que apunta al Node liberado falla antes de poder comprobar null.
+		var source_variant: Variant = record.source
+		if not is_instance_valid(source_variant):
 			continue
+		var source := source_variant as VoxelBody3D
+		if source == null:
+			continue
+		var target_variant: Variant = record.target
+		var target := target_variant as VoxelBody3D if is_instance_valid(target_variant) else null
 		var profile := physics_impact_profile(
 			source, float(record.impulse), float(record.speed)
 		)
@@ -733,9 +727,8 @@ func _physics_process(delta: float) -> void:
 	var hits := 0
 	var now := Time.get_ticks_msec()
 	var moving_bodies: Array[VoxelBody3D] = []
-	for body: VoxelBody3D in _dynamic_bodies:
-		if body == null or not is_instance_valid(body) or not body.is_awake() \
-				or body.collision_handoff_pending:
+	for body: VoxelBody3D in get_awake_dynamic_bodies():
+		if body.collision_handoff_pending:
 			continue
 		body.update_adaptive_ccd()
 		var rigid := body.get_physics_body() as RigidBody3D
@@ -839,7 +832,7 @@ func get_metrics() -> Dictionary:
 		"damage_budget_ms": damage_budget_ms,
 		"physics_impacts": physics_impacts,
 		"physics_impact_damage_ms": physics_impact_damage_ms,
-		"pending_physics_impacts": _pending_physics_impacts.size(),
+		"pending_physics_impacts": _physics_impact_queue.size(),
 		"last_physics_impact": last_physics_impact,
 		"motion_contact_ms": motion_contact_ms,
 		"motion_contact_tests": motion_contact_tests,
@@ -964,22 +957,17 @@ func _split_loose_shapes(body: VoxelBody3D) -> Array[VoxelBody3D]:
 ## Agrupa las Shapes de un mismo cuerpo por contacto real entre voxeles, mas las soldaduras de autor
 ## que no puede romper nadie. `weld` vacio da el agrupamiento crudo, que es el que fija la linea base.
 func _contact_groups(shapes: Array[VoxelShape3D], weld: Dictionary) -> Array:
+	var edges := PackedInt32Array()
+	for first in shapes.size():
+		for second in range(first + 1, shapes.size()):
+			if _linked(shapes[first], shapes[second], weld):
+				edges.append(first)
+				edges.append(second)
 	var groups: Array = []
-	var assigned := {}
-	for seed_index in shapes.size():
-		if assigned.has(seed_index):
-			continue
+	for native_group: PackedInt32Array in _structural_graph.connected_groups(shapes.size(), edges):
 		var group: Array[VoxelShape3D] = []
-		var frontier: Array[int] = [seed_index]
-		assigned[seed_index] = true
-		while not frontier.is_empty():
-			var current := frontier.pop_back() as int
-			group.append(shapes[current])
-			for other in shapes.size():
-				if assigned.has(other) or not _linked(shapes[current], shapes[other], weld):
-					continue
-				assigned[other] = true
-				frontier.append(other)
+		for shape_index in native_group:
+			group.append(shapes[shape_index])
 		groups.append(group)
 	return groups
 
@@ -1218,32 +1206,43 @@ func _local_static_contacts(
 func _reaches_foundation(
 	shape: VoxelShape3D, excluded: VoxelShape3D = null
 ) -> Dictionary:
-	if _is_foundation(shape):
-		return {"grounded": true, "visited": {}}
-	var visited := {shape.get_instance_id(): shape}
-	if excluded != null:
-		visited[excluded.get_instance_id()] = excluded
-	var frontier: Array[VoxelShape3D] = [shape]
-	while not frontier.is_empty():
-		var current: VoxelShape3D = frontier.pop_back()
-		# En Lee la mayoría de rutas termina a uno o dos saltos en roca. Confirmar primero candidatos
-		# que ya sabemos que son cimiento evita construir la lista completa de contactos de una Shape
-		# grande solo para descartarla inmediatamente al descubrir el suelo.
-		if not _contact_cache.has(current.get_instance_id()) \
-				and _touches_foundation_directly(current, excluded):
-			return {"grounded": true, "visited": visited}
-		for neighbour in _static_contacts(current):
-			var key := neighbour.get_instance_id()
-			if visited.has(key):
-				continue
-			# Se mira el cimiento al DESCUBRIR el vecino, no al sacarlo de la cola. En una ciudad el
-			# terreno esta a uno o dos saltos, y esperar a expandirlo cuesta otra ronda entera de
-			# `_static_contacts`, que es la parte cara.
-			if _is_foundation(neighbour):
-				return {"grounded": true, "visited": visited}
-			visited[key] = neighbour
-			frontier.append(neighbour)
-	return {"grounded": false, "visited": visited}
+	var excluded_id := excluded.get_instance_id() if excluded != null else 0
+	return _support_planner.route(
+		_structural_graph,
+		shape.get_instance_id(), excluded_id,
+		_native_is_foundation_id, _native_static_contact_ids, _native_touches_foundation_directly
+	)
+
+
+func _native_is_foundation_id(shape_id: int) -> bool:
+	var shape_variant := instance_from_id(shape_id)
+	return is_instance_valid(shape_variant) and _is_foundation(shape_variant as VoxelShape3D)
+
+
+func _native_static_contact_ids(shape_id: int) -> PackedInt64Array:
+	var result := PackedInt64Array()
+	var shape_variant := instance_from_id(shape_id)
+	if not is_instance_valid(shape_variant):
+		return result
+	for neighbour in _static_contacts(shape_variant as VoxelShape3D):
+		result.append(neighbour.get_instance_id())
+	return result
+
+
+func _native_body_for_shape_id(shape_id: int) -> VoxelBody3D:
+	var shape_variant := instance_from_id(shape_id)
+	return _body_of(shape_variant as VoxelShape3D) if is_instance_valid(shape_variant) else null
+
+
+func _native_touches_foundation_directly(shape_id: int, excluded_id: int) -> bool:
+	if _contact_cache.has(shape_id):
+		return false
+	var shape_variant := instance_from_id(shape_id)
+	if not is_instance_valid(shape_variant):
+		return false
+	var excluded_variant := instance_from_id(excluded_id) if excluded_id != 0 else null
+	var excluded := excluded_variant as VoxelShape3D if is_instance_valid(excluded_variant) else null
+	return _touches_foundation_directly(shape_variant as VoxelShape3D, excluded)
 
 
 func _touches_foundation_directly(shape: VoxelShape3D, excluded: VoxelShape3D) -> bool:
@@ -1331,7 +1330,6 @@ func _component_reaches_external_foundation(
 
 func _drop_unsupported(shapes: Array[VoxelShape3D]) -> Array[VoxelBody3D]:
 	var dropped: Array[VoxelBody3D] = []
-	var decided := {}
 	_support_searches = 0
 	support_touch_calls = 0
 	support_foundation_tests = 0
@@ -1341,35 +1339,19 @@ func _drop_unsupported(shapes: Array[VoxelShape3D]) -> Array[VoxelBody3D]:
 	support_nodes = 0
 	support_candidates = 0
 	var support_started := Time.get_ticks_usec()
-	for shape in shapes:
-		var body := _body_of(shape)
-		# Una Shape anclada ya tiene su modelo: `_has_structural_support` decide por ella. Esto es
-		# solo para las del mapa, que entran sin anclas y por eso no caian nunca.
-		if body == null or body.state != VoxelBody3D.State.STATIC or shape.anchored \
-				or not body.collision_enabled or shape.voxel_count() == 0:
-			continue
-		if decided.has(shape.get_instance_id()) or _is_foundation(shape):
-			continue
-		_support_searches += 1
-		var search := _reaches_foundation(shape)
-		var visited: Dictionary = search.visited
-		for key in visited:
-			decided[key] = true
-		if bool(search.grounded):
-			continue
-		# Toda la cadena esta suelta y cae como UN cuerpo rigido. Antes caia cada Shape con el suyo,
-		# y eso desmontaba lo que nadie habia roto: la cabeza de la torre electrica de Lee es un
-		# `<vox>` aparte del mastil, con su propio cuerpo, y al soltarse el mastil la cabeza se
-		# quedaba flotando. Lo que la destruccion no ha separado sigue junto.
+	var plan: Dictionary = _support_planner.plan_drop_chains(
+		shapes, _structural_graph, _native_body_for_shape_id, _native_is_foundation_id,
+		_native_static_contact_ids, _native_touches_foundation_directly
+	)
+	_support_searches = int(plan.searches)
+	# Toda isla suelta cae como un solo cuerpo; el commit de Nodes/Jolt permanece aquí y se ejecuta
+	# una vez por cadena ya planificada en C++.
+	for chain_variant: Variant in plan.chains:
 		var chain: Array[VoxelBody3D] = []
-		for key in visited:
-			var loose := visited[key] as VoxelShape3D
-			var loose_body := _body_of(loose)
-			if loose_body == null or loose_body.state != VoxelBody3D.State.STATIC \
-					or not loose_body.collision_enabled or loose.anchored:
-				continue
-			if not chain.has(loose_body):
-				chain.append(loose_body)
+		for body_variant: Variant in chain_variant as Array:
+			var body := body_variant as VoxelBody3D
+			if body != null:
+				chain.append(body)
 		var merged := _merge_dropped_chain(chain)
 		if merged != null:
 			dropped.append(merged)
@@ -1504,7 +1486,7 @@ func _finalize_detached_bodies(
 	for fragment in live:
 		impulse_registry[fragment.get_instance_id()] = true
 		if source_was_static and fragment.collision_handoff_pending:
-			_collision_handoffs.append({
+			_collision_handoffs.enqueue({
 				"transaction": transaction_id,
 				"fragment": fragment,
 				"source_body": source_body,
@@ -1659,17 +1641,12 @@ func _split_disconnected(
 			return []
 
 	var created: Array[VoxelBody3D] = []
-	for component_index in components.size():
-		var component: Dictionary = components[component_index]
-		var supported := _has_structural_support(component)
-		if supported:
-			continue
-		# Los VOX de Teardown (árboles sobre todo) pueden traer muchas islas authored dentro de una
-		# sola Shape. Un golpe no debe soltar hojas al otro lado del volumen. Solo una componente
-		# próxima al cráter puede haber sido creada por este corte; las demás conservan su Body.
-		if not shape.anchored and _body.state != VoxelBody3D.State.DYNAMIC \
-				and not _component_near_voxel(component, damage_voxel, local_reach):
-			continue
+	var component_plan := _damage_planner.plan_detached_components(
+		components, shape.anchored, _body.state == VoxelBody3D.State.DYNAMIC,
+		damage_voxel, local_reach, physics_budget.particle_voxel_limit
+	)
+	for decision: Dictionary in component_plan:
+		var component: Dictionary = components[int(decision.component_index)]
 		_ensure_component_indices(shape, component)
 		var indices: PackedInt32Array = component.indices
 		# Las componentes soportadas ya se omitieron. Una componente sin ruta se desprende completa:
@@ -1678,7 +1655,7 @@ func _split_disconnected(
 		var count := indices.size() - retained_anchors.size()
 		if count <= 0:
 			continue
-		if count <= physics_budget.particle_voxel_limit \
+		if bool(decision.particle_candidate) \
 				and not bool(component.get("external_contact", false)):
 			var discarded := shape.detach_component_preserving(indices, retained_anchors)
 			if discarded != null:
@@ -1810,41 +1787,9 @@ func _process(delta: float) -> void:
 
 
 func _process_collision_handoffs() -> void:
-	var physics_frame := Engine.get_physics_frames()
-	for index in range(_collision_handoffs.size() - 1, -1, -1):
-		var ticket: Dictionary = _collision_handoffs[index]
-		var fragment_variant: Variant = ticket.get("fragment")
-		if not is_instance_valid(fragment_variant):
-			_collision_handoffs.remove_at(index)
-			continue
-		var fragment := fragment_variant as VoxelBody3D
-		var source_variant: Variant = ticket.get("source_body")
-		var source_pending := false
-		var source_shape_variant: Variant = ticket.get("source_shape")
-		if is_instance_valid(source_variant) and is_instance_valid(source_shape_variant):
-			source_pending = (source_variant as VoxelBody3D) \
-				.is_static_collision_revision_pending(
-					source_shape_variant as VoxelShape3D, int(ticket.source_revision)
-				)
-		var absorbed_pending := false
-		for absorbed_variant: Variant in ticket.get("absorbed", []):
-			if is_instance_valid(absorbed_variant) and (absorbed_variant as Node).is_inside_tree():
-				absorbed_pending = true
-				break
-		if source_pending or absorbed_pending:
-			ticket.ready_frame = -1
-			continue
-		if int(ticket.ready_frame) < 0:
-			ticket.ready_frame = physics_frame + 1
-			continue
-		if physics_frame < int(ticket.ready_frame):
-			continue
-		fragment.complete_collision_handoff(
-			ticket.impulse_center, float(ticket.impulse_energy), float(ticket.impulse_radius)
-		)
-		if is_instance_valid(source_shape_variant):
-			_cleanup_empty_source(source_shape_variant as VoxelShape3D)
-		_collision_handoffs.remove_at(index)
+	for shape_variant: Variant in _collision_handoffs.process(Engine.get_physics_frames()):
+		if is_instance_valid(shape_variant):
+			_cleanup_empty_source(shape_variant as VoxelShape3D)
 
 
 func _flush_collision_handoff_budget() -> void:
@@ -1852,18 +1797,7 @@ func _flush_collision_handoff_budget() -> void:
 		return
 	var started := Time.get_ticks_usec()
 	while Time.get_ticks_usec() - started < COLLISION_HANDOFF_BUDGET_USEC:
-		var selected: VoxelBody3D = null
-		for ticket: Dictionary in _collision_handoffs:
-			var source_variant: Variant = ticket.get("source_body")
-			var shape_variant: Variant = ticket.get("source_shape")
-			if not is_instance_valid(source_variant) or not is_instance_valid(shape_variant):
-				continue
-			var source := source_variant as VoxelBody3D
-			if source.is_static_collision_revision_pending(
-				shape_variant as VoxelShape3D, int(ticket.source_revision)
-			):
-				selected = source
-				break
+		var selected := _collision_handoffs.select_pending_source() as VoxelBody3D
 		if selected == null:
 			return
 		prioritize_collision_rebuild(selected)
@@ -1891,49 +1825,25 @@ func _cleanup_empty_source(shape: VoxelShape3D) -> void:
 
 
 func get_physics_coherence_snapshot() -> Dictionary:
-	var first_pending := {}
-	for body in _bodies:
-		if not is_instance_valid(body):
-			continue
-		for shape in body.get_shapes():
-			if not is_instance_valid(shape) or shape.data == null:
-				continue
-			var revision := shape.content_revision()
-			var collision_revision := body.get_collision_revision(shape) \
-				if body.collision_enabled else revision
-			var pending := body.has_pending_collision_rebuild() \
-				or _shape_has_baked_collision_pending(shape) \
-				or body.collision_handoff_pending
-			var entry := {
-				"shape": shape.get_instance_id(), "body": body.get_instance_id(),
-				"canonical_revision": revision,
-				"notified_revision": shape.last_notified_revision,
-				"collision_revision": collision_revision,
-				"physics_generation": body.physics_generation,
-			}
-			if shape.last_notified_revision != revision:
-				entry["status"] = "DESYNC"
-				entry["consumer"] = "voxel_change_signal"
-				entry["support_route"] = get_support_route_trace(shape)
+	# El registro mantiene revisiones y estado pendiente al escribir. Antes, esta consulta recorría
+	# cada Shape y, para cada una, volvía a recorrer toda la cola baked: O(shapes * queue) cada 100 ms
+	# justo mientras había cuerpos despiertos. En Lee eran ~2 200 * ~17 000 comparaciones GDScript.
+	var snapshot: Dictionary = _runtime_registry.get_coherence_snapshot()
+	if snapshot.get("status") == "DESYNC":
+		var shape := instance_from_id(int(snapshot.get("shape", 0))) as VoxelShape3D
+		if shape != null and is_instance_valid(shape):
+			snapshot["support_route"] = get_support_route_trace(shape)
+			if snapshot.get("consumer") == "voxel_change_signal":
 				_queue_desync_recovery(shape)
-				return entry
-			if collision_revision != revision:
-				entry["status"] = "PENDING" if pending else "DESYNC"
-				entry["consumer"] = "collision"
-				if not pending:
-					entry["support_route"] = get_support_route_trace(shape)
-					return entry
-				if first_pending.is_empty():
-					first_pending = entry
-	if not first_pending.is_empty():
-		return first_pending
-	if not _pending_fragments.is_empty() or not _collision_handoffs.is_empty() \
-			or not _baked_collision_queue.is_empty():
+		return snapshot
+	if snapshot.get("status") == "COHERENT" and (
+			not _pending_fragments.is_empty() or not _collision_handoffs.is_empty()
+	):
 		return {
 			"status": "PENDING", "shape": "-", "body": "-",
 			"consumer": "fragment_queue",
 		}
-	return {"status": "COHERENT", "shape": "-", "body": "-", "consumer": "-"}
+	return snapshot
 
 
 func _queue_desync_recovery(shape: VoxelShape3D) -> void:
@@ -1951,13 +1861,6 @@ func _recover_desynced_shape(shape: VoxelShape3D, key: int) -> void:
 		return
 	_foundation_cache.erase(key)
 	shape.recover_unnotified_mutation()
-
-
-func _shape_has_baked_collision_pending(shape: VoxelShape3D) -> bool:
-	for entry: Dictionary in _baked_collision_queue:
-		if entry.get("shape") == shape:
-			return true
-	return false
 
 
 ## Se calcula solo al solicitar diagnóstico: no añade coste al BFS normal de soporte.
@@ -1989,61 +1892,46 @@ func get_support_route_trace(shape: VoxelShape3D) -> Array[int]:
 
 func _enforce_physics_budget(burst: bool) -> void:
 	var now := Time.get_ticks_msec()
-	var awake_limit := physics_budget.burst_awake_bodies if burst \
-		else physics_budget.target_awake_bodies
-	var active: Array[VoxelBody3D] = []
-	for body in _dynamic_bodies:
-		if is_instance_valid(body) and body.state == VoxelBody3D.State.DYNAMIC:
-			active.append(body)
-	_dynamic_bodies = active.duplicate()
-	# Solo cuentan los cuerpos despiertos. Un cuerpo dormido no lo simula Jolt: está fuera de la lista
-	# activa hasta que algo lo toca, y sus cajas no cuestan solver. Contándolos todos, los 632 props
-	# importados de Lee sumaban 13 761 cajas contra un techo de 8 192 y disparaban la degradación de
-	# colisión del mapa entero en el primer tick, dejando cada caja y cada bidón hecho un bloque.
-	var awake_bodies_list: Array[VoxelBody3D] = []
-	for body in active:
-		if body.is_awake():
-			awake_bodies_list.append(body)
-	var awake := awake_bodies_list.size()
-	var boxes := 0
-	for body in awake_bodies_list:
-		boxes += body.compound_boxes
-	if boxes > physics_budget.max_active_boxes and not awake_bodies_list.is_empty():
-		# Preserve every structural Body while simplifying compounds uniformly until the hard global
-		# limit is met. At reduced pitch `VoxelShapeData` keeps tight occupied bounds per local cell;
-		# it never turns one lattice voxel into an entire invisible support cube.
-		var allowance := maxi(1, physics_budget.max_active_boxes / awake_bodies_list.size())
-		allowance = mini(allowance, physics_budget.max_boxes_per_body)
-		boxes = 0
-		for body in awake_bodies_list:
-			if body.compound_boxes > allowance:
-				body.rebuild_dynamic_collision(allowance)
-			boxes += body.compound_boxes
-	if awake <= awake_limit and boxes <= physics_budget.max_active_boxes:
-		return
-	active.sort_custom(func(a: VoxelBody3D, b: VoxelBody3D) -> bool:
-		if a.structural != b.structural:
-			return not a.structural
-		return a.last_interaction_msec < b.last_interaction_msec
+	var plan: Dictionary = _runtime_registry.plan_budget(
+		physics_budget.target_awake_bodies, physics_budget.burst_awake_bodies,
+		physics_budget.max_active_boxes, physics_budget.max_boxes_per_body, burst
 	)
-	for body in active:
-		if awake <= awake_limit and boxes <= physics_budget.max_active_boxes:
+	# El censo, suma y ordenación viven en C++. GDScript conserva únicamente las mutaciones de nodos
+	# y Jolt, que deben ocurrir en el hilo principal de acuerdo con el contrato de Godot.
+	for body_id: int in plan.simplify_ids:
+		var body := instance_from_id(body_id) as VoxelBody3D
+		if body == null or not is_instance_valid(body):
+			continue
+		body.rebuild_dynamic_collision(int(plan.allowance))
+		_sync_runtime_body(body)
+	plan = _runtime_registry.plan_budget(
+		physics_budget.target_awake_bodies, physics_budget.burst_awake_bodies,
+		physics_budget.max_active_boxes, physics_budget.max_boxes_per_body, burst
+	)
+	if not bool(plan.over_budget):
+		return
+	for body_id: int in plan.retirement_order:
+		if not bool(plan.over_budget):
 			break
+		var body := instance_from_id(body_id) as VoxelBody3D
+		if body == null or not is_instance_valid(body) \
+				or body.state != VoxelBody3D.State.DYNAMIC:
+			continue
 		# Replacing the PhysicsBody invalidates every Joint3D connected to it. Door and mechanism
 		# bodies therefore remain dynamic (they can still sleep normally and cost almost nothing).
 		if body.is_physics_persistent():
 			continue
-		var old_boxes := body.compound_boxes
 		var was_awake := body.is_awake()
 		# Los fragmentos por debajo del umbral estructural son cosméticos. Si el burst ya rebasa el
 		# techo medido, conservarlos como RigidBody degrada también las piezas importantes; se pasan
 		# inmediatamente al pool visual hasta recuperar presupuesto. No se congela ni simplifica una
 		# componente estructural para ocultar el coste.
-		if not body.structural and (awake > awake_limit \
-				or boxes > physics_budget.max_active_boxes):
+		if not body.structural:
 			_retire_debris_to_particles(body)
-			boxes -= old_boxes
-			awake -= 1 if was_awake else 0
+			plan = _runtime_registry.plan_budget(
+				physics_budget.target_awake_bodies, physics_budget.burst_awake_bodies,
+				physics_budget.max_active_boxes, physics_budget.max_boxes_per_body, burst
+			)
 			continue
 		# Un prop que lleva dormido desde que se importó no ha interactuado nunca y no cuesta nada:
 		# retirarlo a estática solo lo mataría. Se retira lo que estuvo vivo y acaba de pararse.
@@ -2055,12 +1943,13 @@ func _enforce_physics_budget(burst: bool) -> void:
 		if inactive_long_enough:
 			body.retire_to_static()
 			retired_bodies += 1
-			boxes -= old_boxes
-			awake -= 1 if was_awake else 0
+			_sync_runtime_body(body)
 		elif _can_degrade_to_particles(body, now):
 			_retire_debris_to_particles(body)
-			boxes -= old_boxes
-			awake -= 1 if was_awake else 0
+		plan = _runtime_registry.plan_budget(
+			physics_budget.target_awake_bodies, physics_budget.burst_awake_bodies,
+			physics_budget.max_active_boxes, physics_budget.max_boxes_per_body, burst
+		)
 
 
 ## Cajas que puede gastar un cuerpo que acaba de nacer o de volverse dinamico.
@@ -2092,37 +1981,30 @@ func _can_degrade_to_particles(body: VoxelBody3D, now: int) -> bool:
 func _retire_debris_to_particles(body: VoxelBody3D) -> void:
 	for shape in body.get_shapes():
 		_particle_pool.emit_component(shape, shape.data.get_live_indices(), body.global_position)
-		_unregister_shape_spatial(shape)
-	_bodies.erase(body)
-	_dynamic_bodies.erase(body)
+	unregister_body(body)
 	body.queue_free()
 	retired_bodies += 1
 
 
 func _update_metrics() -> void:
-	awake_bodies = 0
-	compound_boxes = 0
-	awake_compound_boxes = 0
-	var live_dynamic: Array[VoxelBody3D] = []
-	var empty_dynamic: Array[VoxelBody3D] = []
-	for body in _dynamic_bodies:
-		if not is_instance_valid(body) or body.state != VoxelBody3D.State.DYNAMIC:
+	_apply_runtime_metrics()
+	# La invariante autorreparable consulta solo IDs marcados al escribir. Ya no vuelve a sumar ni a
+	# contar voxeles de cada cuerpo dinámico en cada mantenimiento.
+	for body_id: int in _runtime_registry.get_zero_voxel_body_ids():
+		var body := instance_from_id(body_id) as VoxelBody3D
+		if body == null or not is_instance_valid(body):
+			_runtime_registry.remove_body(body_id)
 			continue
-		if body.get_total_voxels() == 0:
-			empty_dynamic.append(body)
-			continue
-		live_dynamic.append(body)
-		compound_boxes += body.compound_boxes
-		if not body.is_awake():
-			continue
-		awake_bodies += 1
-		awake_compound_boxes += body.compound_boxes
-	_dynamic_bodies = live_dynamic
-	# Invariante autorreparable para cualquier escritor futuro que olvide la limpieza transaccional.
-	# Corre junto con métricas; solo suma contadores ya mantenidos por las Shapes.
-	for body in empty_dynamic:
 		unregister_body(body)
 		body.queue_free()
+	_apply_runtime_metrics()
+
+
+func _apply_runtime_metrics() -> void:
+	var metrics: Dictionary = _runtime_registry.get_metrics()
+	awake_bodies = int(metrics.awake_bodies)
+	compound_boxes = int(metrics.compound_boxes)
+	awake_compound_boxes = int(metrics.awake_compound_boxes)
 
 
 func _cleanup_body_list() -> void:
@@ -2147,6 +2029,10 @@ func _on_shape_changed(
 ) -> void:
 	_cancel_baked_collision(shape)
 	_invalidate_contacts(shape)
+	_sync_runtime_shape(shape)
+	var body := _body_of(shape)
+	if body != null:
+		_sync_runtime_body(body)
 	voxels_changed.emit(shape, world_aabb, dirty_min, dirty_max)
 
 
@@ -2157,6 +2043,8 @@ func _cancel_baked_collision(shape: VoxelShape3D) -> void:
 			continue
 		_baked_collision_pending_blocks -= (entry.records as Array).size() - int(entry.cursor)
 		_baked_collision_queue.remove_at(index)
+	_runtime_registry.set_baked_collision_pending(shape.get_instance_id(), false)
+	_sync_runtime_shape(shape)
 
 
 func _prioritize_baked_collision(center: Vector3) -> void:
@@ -2186,6 +2074,8 @@ func _flush_baked_collision_budget() -> void:
 		var records := entry.records as Array
 		var cursor := int(entry.cursor)
 		if not is_instance_valid(body) or not is_instance_valid(shape) or cursor >= records.size():
+			if is_instance_valid(shape):
+				_runtime_registry.set_baked_collision_pending(shape.get_instance_id(), false)
 			_baked_collision_pending_blocks -= maxi(0, records.size() - cursor)
 			_baked_collision_queue.pop_front()
 			continue
@@ -2195,6 +2085,8 @@ func _flush_baked_collision_budget() -> void:
 		if int(entry.cursor) >= records.size():
 			body.acknowledge_static_collision_revision(shape)
 			_baked_collision_queue.pop_front()
+			_runtime_registry.set_baked_collision_pending(shape.get_instance_id(), false)
+			_sync_runtime_body(body)
 
 
 ## Romper voxeles puede deshacer un contacto, asi que se tira la entrada de esa Shape y tambien la de
@@ -2232,6 +2124,56 @@ func _on_body_state_changed(body: VoxelBody3D) -> void:
 			_dynamic_bodies.append(body)
 	else:
 		_dynamic_bodies.erase(body)
+	_bind_runtime_sleep_signal(body)
+	_sync_runtime_body(body)
+
+
+func _on_runtime_state_changed(body: VoxelBody3D) -> void:
+	_sync_runtime_body(body)
+
+
+func _on_runtime_sleeping_changed(body: VoxelBody3D) -> void:
+	_sync_runtime_body(body)
+
+
+func _bind_runtime_sleep_signal(body: VoxelBody3D) -> void:
+	if body == null or not is_instance_valid(body):
+		return
+	var rigid := body.get_physics_body() as RigidBody3D
+	if rigid == null:
+		return
+	var callback := _on_runtime_sleeping_changed.bind(body)
+	if not rigid.sleeping_state_changed.is_connected(callback):
+		rigid.sleeping_state_changed.connect(callback)
+
+
+func _sync_runtime_body(body: VoxelBody3D) -> void:
+	if body == null or not is_instance_valid(body):
+		return
+	_runtime_registry.upsert_body(
+		body.get_instance_id(), body.state == VoxelBody3D.State.DYNAMIC, body.is_awake(),
+		body.structural, body.is_physics_persistent(), body.compound_boxes,
+		body.get_total_voxels(), body.last_interaction_msec
+	)
+	for shape in body.get_shapes():
+		_sync_runtime_shape(shape, body)
+	_apply_runtime_metrics()
+
+
+func _sync_runtime_shape(shape: VoxelShape3D, owner: VoxelBody3D = null) -> void:
+	if shape == null or not is_instance_valid(shape) or shape.data == null:
+		return
+	var body := owner if owner != null else _body_of(shape)
+	if body == null or not is_instance_valid(body):
+		return
+	var revision := shape.content_revision()
+	_runtime_registry.upsert_shape(
+		shape.get_instance_id(), shape.data, body.get_instance_id(), revision,
+		shape.last_notified_revision,
+		body.get_collision_revision(shape) if body.collision_enabled else revision,
+		body.collision_enabled, body.has_pending_collision_rebuild(),
+		body.collision_handoff_pending
+	)
 
 
 ## Broad phase de la destruccion. Antes preguntaba al arbol AABB, y ahi estaba el pico: la
@@ -2270,6 +2212,7 @@ func _unregister_shape_spatial(shape: VoxelShape3D) -> void:
 	_invalidate_contacts(shape)
 	_static_grid.remove_id(shape.get_instance_id())
 	_unregister_dynamic_shape(shape)
+	_runtime_registry.remove_shape(shape.get_instance_id())
 
 
 func _register_dynamic_shape(shape: VoxelShape3D) -> void:
@@ -2294,9 +2237,7 @@ func _unregister_dynamic_shape(shape: VoxelShape3D) -> void:
 func _refresh_awake_dynamic_grid() -> void:
 	# Los props importados entran en la rejilla al registrarse y duermen ahi. Solo un cuerpo despierto
 	# puede haber cambiado de sitio, asi que una consulta de daño no recorre las 628 Shapes dormidas.
-	for body in _dynamic_bodies:
-		if not is_instance_valid(body) or not body.is_awake():
-			continue
+	for body in get_awake_dynamic_bodies():
 		for shape in body.get_shapes():
 			_update_dynamic_grid_shape(shape)
 
@@ -2355,6 +2296,7 @@ func _flush_one_collision_rebuild() -> void:
 		)
 		if body.has_pending_collision_rebuild():
 			queue_collision_rebuild(body)
+		_sync_runtime_body(body)
 		return
 
 

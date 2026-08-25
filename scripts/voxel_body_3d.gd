@@ -3,6 +3,7 @@ extends Node3D
 ## Public Body in the World -> Body -> Shape model.
 
 signal body_state_changed(body: VoxelBody3D)
+signal runtime_state_changed(body: VoxelBody3D)
 
 enum State { STATIC, DYNAMIC, RETIRED_STATIC }
 
@@ -43,6 +44,7 @@ var _handoff_collision_layer := 1
 var _handoff_collision_mask := 1
 var _handoff_impulses: Array[Dictionary] = []
 var _vehicle_descriptor := {}
+var _collision_installer := VoxelCollisionInstaller.new()
 
 const LARGE_BODY_CCD_BOX_THRESHOLD := 20
 const LARGE_BODY_CCD_MASS_THRESHOLD := 2000.0
@@ -124,6 +126,7 @@ func make_dynamic(max_boxes := 128, rebuild_collision := true) -> void:
 		voxel_world.queue_transition_collision_handoff(self)
 	last_interaction_msec = Time.get_ticks_msec()
 	body_state_changed.emit(self)
+	runtime_state_changed.emit(self)
 
 
 func retire_to_static() -> void:
@@ -134,6 +137,7 @@ func retire_to_static() -> void:
 	for shape in get_shapes():
 		rebuild_static_collision(shape)
 	body_state_changed.emit(self)
+	runtime_state_changed.emit(self)
 
 
 func reactivate(max_boxes := 128) -> void:
@@ -198,6 +202,7 @@ func wake_for_interaction() -> void:
 	if _physics_body is RigidBody3D:
 		(_physics_body as RigidBody3D).sleeping = false
 	last_interaction_msec = Time.get_ticks_msec()
+	runtime_state_changed.emit(self)
 
 
 func get_total_voxels() -> int:
@@ -301,6 +306,7 @@ func complete_collision_handoff(
 		apply_explosion_impulse(
 			queued.center as Vector3, float(queued.energy), float(queued.radius)
 		)
+	runtime_state_changed.emit(self)
 
 
 func get_collision_revision(shape: VoxelShape3D) -> int:
@@ -557,24 +563,16 @@ func _install_static_collision_faces(
 				_static_collision_shards.erase(shard_key)
 				shard.queue_free()
 		return
-	if collision == null:
-		collision = CollisionShape3D.new()
-		var shard_key := _static_collision_shard_key(shape, macro)
-		_static_collision_shard(shape, macro).add_child(collision)
-		collision.set_meta("static_shard_key", shard_key)
-		collision.set_meta("static_macro", macro)
+	var shard_key := _static_collision_shard_key(shape, macro)
+	var parent: Node = collision.get_parent() if collision != null \
+		else _static_collision_shard(shape, macro)
+	var installed := _collision_installer.install_concave(
+		parent, collision, shape, faces, shard_key, macro
+	)
+	if collision == null and installed != null:
+		collision = installed
 		_collision_nodes.append(collision)
 		_macro_collisions[key] = collision
-	var concave := ConcavePolygonShape3D.new()
-	# El devanado que sale de `build_macro_faces` deja la cara solida mirando hacia DENTRO del
-	# volumen: con caras de un solo lado, un rayo desde fuera atravesaba el suelo y chocaba con la
-	# cara inferior por el interior. Por eso se caia uno por el forjado de las casas. De dos lados
-	# es ademas lo que quiere un mundo destructible: al abrir un boquete uno acaba dentro de la
-	# malla, y ahi la cara interior tiene que frenar igual.
-	concave.backface_collision = true
-	concave.set_faces(faces)
-	collision.shape = concave
-	collision.transform = shape.transform
 
 
 ## Extrae las caras iniciales ya fusionadas para el compilado offline del mapa. No se guardan RIDs
@@ -666,28 +664,21 @@ func rebuild_dynamic_collision(max_boxes := 128) -> void:
 	var started := Time.get_ticks_usec()
 	_clear_collisions()
 	var shapes := get_shapes()
-	var remaining := maxi(1, max_boxes)
-	for shape_index in shapes.size():
-		var shape := shapes[shape_index]
-		var allowance := maxi(1, remaining / maxi(1, shapes.size() - shape_index))
-		var decomposition: Dictionary = shape.build_collision_boxes(allowance)
-		for box: Dictionary in decomposition.get("boxes", []):
-			var collision := CollisionShape3D.new()
-			var box_shape := BoxShape3D.new()
-			box_shape.size = box.size
-			collision.shape = box_shape
-			collision.transform = shape.transform * Transform3D(Basis.IDENTITY, box.position)
-			# Permite que un raycast de interacción conserve la Shape exacta. Es importante si un
-			# `<body>` contiene varias piezas y luego un split transfiere solo la que se está agarrando.
-			collision.set_meta("voxel_shape", shape)
-			_physics_body.add_child(collision)
+	var installed: Dictionary = _collision_installer.install_dynamic_boxes(
+		_physics_body, shapes, max_boxes
+	)
+	for collision_variant: Variant in installed.nodes:
+		var collision := collision_variant as CollisionShape3D
+		if collision != null:
 			_collision_nodes.append(collision)
-			compound_boxes += 1
-		remaining = maxi(0, max_boxes - compound_boxes)
+	compound_boxes = int(installed.count)
 	_apply_mass_properties()
-	for shape in shapes:
-		_collision_revision_by_shape[shape.get_instance_id()] = shape.content_revision()
+	var shape_ids: PackedInt64Array = installed.shape_ids
+	var revisions: PackedInt64Array = installed.revisions
+	for index in mini(shape_ids.size(), revisions.size()):
+		_collision_revision_by_shape[shape_ids[index]] = revisions[index]
 	collision_rebuild_ms = (Time.get_ticks_usec() - started) / 1000.0
+	runtime_state_changed.emit(self)
 
 
 ## Recalcula masa, centro e inercia sin tocar el compound. Es deliberadamente público para ajustes
@@ -716,6 +707,7 @@ func apply_explosion_impulse(center: Vector3, energy: float, radius: float) -> v
 	rigid.apply_central_impulse(offset / distance * energy * rigid.mass * falloff * 0.12)
 	rigid.sleeping = false
 	last_interaction_msec = Time.get_ticks_msec()
+	runtime_state_changed.emit(self)
 
 
 ## El RigidBody solo captura datos del solver. La mutación voxel se difiere y pasa por el World,
@@ -771,9 +763,7 @@ func _replace_physics_body(dynamic: bool) -> void:
 
 
 func _clear_collisions() -> void:
-	for collision in _collision_nodes:
-		if is_instance_valid(collision):
-			collision.queue_free()
+	_collision_installer.queue_free_nodes(_collision_nodes)
 	for shard: StaticBody3D in _static_collision_shards.values():
 		if is_instance_valid(shard):
 			shard.queue_free()
@@ -842,6 +832,25 @@ func _apply_mass_properties() -> void:
 	rigid.center_of_mass_mode = RigidBody3D.CENTER_OF_MASS_MODE_CUSTOM
 	rigid.center_of_mass = center_of_mass
 	rigid.inertia = summed_inertia.max(Vector3.ONE * 0.0001)
+	if not rigid is VoxelVehicle3D:
+		var damping := structural_damping_for_inertia(rigid.inertia)
+		if damping.y > 0.0:
+			rigid.linear_damp = damping.x
+			rigid.angular_damp = damping.y
+
+
+## Los postes tienen una inercia diminuta alrededor de su eje largo y enorme alrededor de los otros
+## dos. Esa anisotropía permite reconocerlos sin tags del mapa y disipar el péndulo de cables/choques
+## sin amortiguar cajas, vehículos ni cascotes compactos.
+static func structural_damping_for_inertia(body_inertia: Vector3) -> Vector2:
+	var smallest := maxf(0.0001, minf(body_inertia.x, minf(body_inertia.y, body_inertia.z)))
+	var largest := maxf(body_inertia.x, maxf(body_inertia.y, body_inertia.z))
+	var ratio := largest / smallest
+	if ratio >= 8.0:
+		return Vector2(0.36, 3.8)
+	if ratio >= 4.0:
+		return Vector2(0.20, 1.5)
+	return Vector2.ZERO
 
 
 func _on_shape_voxels_changed(
@@ -854,3 +863,4 @@ func _on_shape_voxels_changed(
 		queue_dynamic_collision_rebuild()
 	else:
 		queue_static_collision_rebuild(shape, dirty_min, dirty_max)
+	runtime_state_changed.emit(self)

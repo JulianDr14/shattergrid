@@ -130,7 +130,12 @@ func configure_entries(
 	brick_table := PackedInt32Array(),
 	brick_grid := Vector2i.ZERO
 ) -> bool:
-	var rebuild_topology := _bvh_topology.is_empty() or not palette_texels.is_empty()
+	# Un refit solo es válido si conserva exactamente las mismas hojas. Antes el tamaño sólo se
+	# reconstruía al cambiar la paleta: crecer por encima de las 256 reservas podía reutilizar una
+	# topología de otro tamaño y dejar registros fuera del BVH.
+	var rebuild_topology := _topology_must_rebuild(
+		_bvh_topology.is_empty(), _entries.size(), entries.size(), not palette_texels.is_empty()
+	)
 	var built := DedicatedVoxelBVH.build_entries(entries) if rebuild_topology \
 		else DedicatedVoxelBVH.refit_entries(entries, _bvh_topology)
 	if built.is_empty():
@@ -150,7 +155,10 @@ func configure_entries(
 		if bool(entry.get("has_glass", false)):
 			_glass_original_to_compact[entry_index] = glass_entries.size()
 			glass_entries.append(entry)
-	var rebuild_glass := _glass_bvh_topology.is_empty() or not palette_texels.is_empty()
+	var rebuild_glass := _topology_must_rebuild(
+		_glass_bvh_topology.is_empty(), _glass_entries.size(), glass_entries.size(),
+		not palette_texels.is_empty()
+	)
 	var glass_built := (
 		DedicatedVoxelBVH.build_entries(glass_entries) if rebuild_glass
 		else DedicatedVoxelBVH.refit_entries(glass_entries, _glass_bvh_topology)
@@ -200,6 +208,16 @@ func configure_entries(
 	return true
 
 
+func get_entry_count() -> int:
+	return _entries.size()
+
+
+static func _topology_must_rebuild(
+	topology_empty: bool, old_entry_count: int, new_entry_count: int, palette_changed: bool
+) -> bool:
+	return topology_empty or palette_changed or old_entry_count != new_entry_count
+
+
 ## Refit only moving leaves and their paths to the root. On Lee this replaces a full 2,247-Shape
 ## metadata/BVH repack per moving frame with one 192-byte Shape record and ~12 48-byte nodes.
 func update_entry_transforms(updates: Array[Dictionary]) -> bool:
@@ -241,8 +259,12 @@ func update_entries(updates: Array[Dictionary]) -> bool:
 			)
 		if _glass_original_to_compact.has(entry_index):
 			var glass_index := int(_glass_original_to_compact[entry_index])
-			var glass_entry: Dictionary = _glass_entries[glass_index]
-			glass_entry.transform = entry.transform
+			# Activar una hoja reservada cambia dimensiones, atlas, tabla de bricks y paleta, no solo
+			# transformada. Copiar únicamente esta última dejaba los fragmentos de vidrio apuntando al
+			# placeholder 1³ y por ello podían conservar colisión pero desaparecer del pase transparente.
+			var glass_entry := _glass_entry_after_update(
+				_glass_entries[glass_index] as Dictionary, entry, update.has("entry")
+			)
 			_glass_entries[glass_index] = glass_entry
 			glass_shape_updates[glass_index] = DedicatedVoxelBVH.pack_entry(glass_entry)
 			for node_index in DedicatedVoxelBVH.refit_entry(
@@ -259,6 +281,14 @@ func update_entries(updates: Array[Dictionary]) -> bool:
 	_pending_glass_node_updates.merge(glass_node_updates, true)
 	_configuration_mutex.unlock()
 	return true
+
+
+static func _glass_entry_after_update(
+	existing: Dictionary, updated: Dictionary, complete_entry: bool
+) -> Dictionary:
+	var result := updated.duplicate(true) if complete_entry else existing.duplicate(true)
+	result.transform = updated.transform
+	return result
 
 
 func update_brick_table(brick_table: PackedInt32Array, brick_grid: Vector2i) -> void:

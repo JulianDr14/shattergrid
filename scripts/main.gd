@@ -209,6 +209,7 @@ func _load_teardown_map() -> bool:
 	# Se entra cayendo: el centro de recorte suele caer dentro de un edificio y aterrizar por
 	# gravedad evita quedarse encajado en la geometría.
 	$Player.global_position = report.get("drop_in", Vector3.UP * 30.0)
+	$Player.reset_physics_interpolation()
 	var boundary := _voxel_world.get_node_or_null("TeardownBoundary")
 	if boundary != null and boundary.has_method("set_tracked_actor"):
 		boundary.set_tracked_actor($Player)
@@ -474,12 +475,22 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _refresh() -> void:
 	var metrics := _voxel_world.get_metrics()
-	_counter.text = "%d voxeles · %d Bodies despiertos · %d cajas activas (%d total) · %d fps" % [
+	var viewport_rid := get_viewport().get_viewport_rid()
+	var fps := Engine.get_frames_per_second()
+	_counter.text = ("%d voxeles · %d Bodies despiertos · %d cajas activas (%d total) · %d fps\n"
+		+ "frame %.1f ms · física %.1f ms · GPU %.1f ms · CPU render %.1f ms · cables %d activos/%d tirando") % [
 		_cached_voxel_total,
 		int(metrics.awake_bodies),
 		int(metrics.awake_compound_boxes),
 		int(metrics.compound_boxes),
-		Engine.get_frames_per_second(),
+		fps,
+		1000.0 / maxf(1.0, float(fps)),
+		Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0,
+		RenderingServer.viewport_get_measured_render_time_gpu(viewport_rid),
+		RenderingServer.viewport_get_measured_render_time_cpu(viewport_rid)
+			+ RenderingServer.get_frame_setup_time_cpu(),
+		_ropes_awake(),
+		_ropes_pulling(),
 	]
 	if "--physics-probe" in OS.get_cmdline_user_args():
 		_counter.text += "\n" + _probe_under_crosshair()
@@ -897,6 +908,7 @@ func _finish_destruction_benchmark() -> void:
 			_percentile(_destruction_metadata_sync_times, 1.0), 0.001
 		),
 		"metadata_fallback_reason": _voxel_renderer.last_metadata_fallback_reason,
+		"renderer_coherence": _voxel_renderer.get_coherence_snapshot(),
 		"collision_flush_p95_ms": snappedf(
 			_percentile(_destruction_collision_flush_times, 0.95), 0.001
 		),

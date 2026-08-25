@@ -19,6 +19,8 @@ const BRICK_HEADROOM := 13
 ## The BVH and Shape storage keep fixed leaves for runtime fragments. Activating a reserved leaf
 ## avoids rebuilding metadata for the complete map during destruction.
 const FRAGMENT_ENTRY_HEADROOM := 256
+const SMALL_MAP_INITIAL_ENTRY_HEADROOM := 512
+const SMALL_MAP_SHAPE_THRESHOLD := 64
 
 ## Techo de celdas del atlas de macroceldas. Es la misma rejilla dividida entre ocho, así que el mapa
 ## entero son 885 K celdas: sobra de largo.
@@ -40,7 +42,11 @@ var _shapes: Array[VoxelShape3D] = []
 var _transforms := {}
 var _entry_indices := {}
 var _reserved_entry_indices := {}
+## Una hoja que nació en el BVH de vidrio puede alojar cualquier Shape; una hoja que no nació allí
+## solo puede reciclarse para opacos porque la topología secundaria permanece fija.
+var _entry_glass_capable := {}
 var _free_entry_indices := PackedInt32Array()
+var _reserved_entry_headroom := FRAGMENT_ENTRY_HEADROOM
 var _palette_rows := {}
 var _glass_usage := {}
 var _macro_atlas_dimensions := Vector3i.ZERO
@@ -55,8 +61,11 @@ var last_transform_sync_ms := 0.0
 var last_metadata_fallback_reason := ""
 var last_damage_update_ms := 0.0
 var damage_uploads_enabled := true
+var entry_capacity_rebuilds := 0
+var _entry_capacity_dirty := false
 var _cleanup_elapsed := 0.0
-var _was_awake := {}
+var _transform_tracker := VoxelTransformTracker.new()
+var _movable_transforms := {}
 
 
 func setup(voxel_world: VoxelWorld3D, camera: Camera3D) -> bool:
@@ -74,16 +83,19 @@ func setup(voxel_world: VoxelWorld3D, camera: Camera3D) -> bool:
 				_shapes.append(shape)
 	if _shapes.is_empty():
 		return true
+	# Cinco edificios + 256 reservas era el caso patológico: una destrucción normal cruzaba el techo
+	# por muy poco y pagaba la reconstrucción durante juego. Los mapas grandes ya aportan miles de
+	# hojas reciclables y mantienen la reserva corta para no aumentar su recorrido por píxel.
+	_reserved_entry_headroom = SMALL_MAP_INITIAL_ENTRY_HEADROOM \
+		if _shapes.size() <= SMALL_MAP_SHAPE_THRESHOLD else FRAGMENT_ENTRY_HEADROOM
 	if not _rebuild_atlases():
 		return false
 	shadow_clipmaps = VoxelShadowClipmaps.new()
 	shadow_clipmaps.name = "VoxelShadowClipmaps"
 	add_child(shadow_clipmaps)
-	var upload_sources: Array = [_voxel_atlas, _macro_atlas]
 	if world.renderer_settings.sun_shadows_enabled:
 		if not shadow_clipmaps.setup(world, camera):
 			return false
-		upload_sources.append_array(shadow_clipmaps.get_upload_sources())
 		effect.configure_shadow_clipmaps(
 			shadow_clipmaps.get_static_rids(),
 			shadow_clipmaps.get_dynamic_rids(),
@@ -93,7 +105,7 @@ func setup(voxel_world: VoxelWorld3D, camera: Camera3D) -> bool:
 		# se entregan una vez, arriba, y no vuelven a cambiar.
 	else:
 		shadow_clipmaps.set_process(false)
-	effect.configure_upload_sources(upload_sources)
+	_refresh_effect_upload_sources()
 	local_shadow_pool = VoxelLocalShadowPool.new()
 	local_shadow_pool.name = "VoxelLocalShadowPool"
 	add_child(local_shadow_pool)
@@ -115,16 +127,22 @@ func register_shape(shape: VoxelShape3D) -> void:
 	_upload_entire_shape(shape)
 	if not _activate_reserved_entry(shape):
 		var palette_key := shape.palette.get_instance_id()
+		var palette_missing := not _palette_rows.has(palette_key)
 		last_metadata_fallback_reason = (
-			"reserved_entries_exhausted" if _free_entry_indices.is_empty()
-			else "new_palette:%s" % shape.name
+			"new_palette:%s" % shape.name if palette_missing
+			else "renderer_entry_capacity:%s" % shape.name
 		)
-		# A genuinely new asset/palette needs a new palette texture. Fragment bursts use inherited
-		# palettes and use the 256 reserved renderer leaves, so exhausting their fixed
-		# leaves is a budget violation, not a reason to rebuild the entire map in the impact frame.
-		if not _palette_rows.has(palette_key):
-			_metadata_dirty = true
-			_palette_dirty = true
+		# No se reconstruye dentro de la señal de destrucción: una explosión puede crear cientos de
+		# fragmentos. Se agrupan todos y `_process` hace una sola reconstrucción al final del frame.
+		# `_sync_metadata` incluye todas las Shapes vivas y vuelve a dejar HEADROOM hojas libres, de
+		# modo que el límite deja de ser fijo sin encarecer de entrada los mapas pequeños.
+		_metadata_dirty = true
+		_palette_dirty = _palette_dirty or palette_missing
+		if not palette_missing:
+			# Después de crecer basta volver a dejar el margen normal; todas las Shapes activas ya forman
+			# parte de la nueva topología.
+			_reserved_entry_headroom = FRAGMENT_ENTRY_HEADROOM
+			_entry_capacity_dirty = true
 
 
 func unregister_shape(shape: VoxelShape3D) -> void:
@@ -146,22 +164,18 @@ func unregister_shape(shape: VoxelShape3D) -> void:
 ## movia, porque la clipmap ya leia esta misma lista.
 func movable_shapes() -> Array[VoxelShape3D]:
 	var result: Array[VoxelShape3D] = []
-	var awake := {}
-	for body in world.get_dynamic_bodies():
-		if not is_instance_valid(body):
+	_movable_transforms.clear()
+	if world == null:
+		return result
+	var snapshot: Dictionary = _transform_tracker.collect(world.get_awake_dynamic_body_ids())
+	var snapshot_shapes: Array = snapshot.shapes
+	var transforms: Array = snapshot.transforms
+	for index in mini(snapshot_shapes.size(), transforms.size()):
+		var shape := snapshot_shapes[index] as VoxelShape3D
+		if shape == null:
 			continue
-		# Un cuerpo dormido no se ha movido. Preguntarle sus Shapes cada frame no es gratis
-		# -`get_shapes()` construye un Array nuevo recorriendo los hijos- y Lee trae 632 props
-		# dinamicos dormidos. Se le da un frame de gracia al que acaba de dormirse para que suba su
-		# postura final, igual que hace la clipmap.
-		var key := body.get_instance_id()
-		if not body.is_awake() and not _was_awake.has(key):
-			continue
-		awake[key] = true
-		for shape in body.get_shapes():
-			if is_instance_valid(shape) and shape.is_inside_tree() and shape.voxel_count() > 0:
-				result.append(shape)
-	_was_awake = awake
+		result.append(shape)
+		_movable_transforms[shape.get_instance_id()] = transforms[index]
 	return result
 
 
@@ -173,16 +187,21 @@ func _process(delta: float) -> void:
 	var transform_updates: Array[Dictionary] = []
 	for shape in movable_shapes():
 		var key := shape.get_instance_id()
-		if _transforms.has(key) and _transform_equal(_transforms[key], shape.global_transform):
+		# El compositor no es un VisualInstance3D y por ello Godot no interpola estos metadatos por
+		# nosotros. Subir la muestra de render evita que carrocería, ruedas y cascotes avancen a saltos
+		# de física aunque la cámara ya sea suave.
+		var render_transform: Transform3D = _movable_transforms[key] \
+			if _movable_transforms.has(key) else shape.get_global_transform_interpolated()
+		if _transforms.has(key) and _transform_equal(_transforms[key], render_transform):
 			continue
-		_transforms[key] = shape.global_transform
+		_transforms[key] = render_transform
 		if not _entry_indices.has(key) and shape.renderer_slot >= 0:
 			_entry_indices[key] = shape.renderer_slot
 		if not _entry_indices.has(key):
 			_activate_reserved_entry(shape)
 		if _entry_indices.has(key) and not _metadata_dirty:
 			transform_updates.append({
-				"index": int(_entry_indices[key]), "transform": shape.global_transform,
+				"index": int(_entry_indices[key]), "transform": render_transform,
 			})
 		else:
 			last_metadata_fallback_reason = "moving_shape_without_entry:%s" % shape.name
@@ -213,8 +232,56 @@ func _process(delta: float) -> void:
 		var started := Time.get_ticks_usec()
 		_sync_metadata(_palette_dirty)
 		last_metadata_sync_ms = (Time.get_ticks_usec() - started) / 1000.0
+		if _entry_capacity_dirty:
+			entry_capacity_rebuilds += 1
+			last_metadata_fallback_reason = "entry_capacity_rebuilt:%d" % _entry_indices.size()
 		_metadata_dirty = false
 		_palette_dirty = false
+		_entry_capacity_dirty = false
+
+
+## Censo CPU de los cuatro registros que deben describir exactamente las mismas Shapes. Sirve para
+## convertir un posible fallo visual futuro en una causa concreta y también para pruebas de estrés.
+func get_coherence_snapshot() -> Dictionary:
+	var effect_entry_count := effect.get_entry_count() if effect != null else 0
+	var live_keys := {}
+	var missing_slots: Array[String] = []
+	var missing_entries: Array[String] = []
+	var invalid_entries: Array[String] = []
+	var stale_renderer_slots: Array[String] = []
+	for shape in _shapes:
+		if not is_instance_valid(shape) or not shape.is_inside_tree() or shape.voxel_count() <= 0:
+			continue
+		var key := shape.get_instance_id()
+		live_keys[key] = true
+		if not _slots.has(key):
+			missing_slots.append(shape.name)
+		if not _entry_indices.has(key):
+			missing_entries.append(shape.name)
+			continue
+		var entry_index := int(_entry_indices[key])
+		if entry_index < 0 or entry_index >= effect_entry_count:
+			invalid_entries.append(shape.name)
+		if shape.renderer_slot != entry_index:
+			stale_renderer_slots.append(shape.name)
+	var orphan_slots := 0
+	for key in _slots:
+		if not live_keys.has(key):
+			orphan_slots += 1
+	return {
+		"live_shapes": live_keys.size(),
+		"atlas_slots": _slots.size(),
+		"renderer_entries": _entry_indices.size(),
+		"free_entries": _free_entry_indices.size(),
+		"gpu_entry_records": effect_entry_count,
+		"missing_slots": missing_slots,
+		"missing_entries": missing_entries,
+		"invalid_entries": invalid_entries,
+		"stale_renderer_slots": stale_renderer_slots,
+		"orphan_slots": orphan_slots,
+		"metadata_rebuild_pending": _metadata_dirty,
+		"entry_capacity_rebuilds": entry_capacity_rebuilds,
+	}
 
 
 func _rebuild_atlases() -> bool:
@@ -235,42 +302,111 @@ func _rebuild_atlases() -> bool:
 	_shapes = live
 	if _shapes.is_empty():
 		return true
-	if not _bricks.configure(_plan_brick_grid(total_bricks)):
+	# La reconstrucción es transaccional. Hasta que los dos atlas candidatos estén completos se
+	# conservan el pool, slots y texturas que el frame anterior sigue dibujando. El código anterior
+	# borraba del registro de render las Shapes que no entraban, aunque su colisión siguiera viva.
+	var previous_bricks = _bricks
+	var previous_brick_table := _brick_table
+	var previous_brick_table_dirty := _brick_table_dirty
+	var previous_macros := _macros
+	var previous_slots := _slots
+	var previous_dimensions := _macro_atlas_dimensions
+	var previous_cursor := _cursor
+	var previous_shelf_height := _shelf_height
+	var previous_layer_depth := _layer_depth
+	var brick_grid := _plan_brick_grid(total_bricks)
+	_bricks = VoxelBrickPool.new()
+	if not _bricks.configure(brick_grid):
 		push_error("VoxelRenderSystem: no se pudo reservar el pool de %d bricks" % total_bricks)
+		_bricks = previous_bricks
 		return false
-	_brick_table.clear()
-	_brick_table_dirty = true
 	# Se pide cuatro veces el volumen que hace falta: el empaquetado por estantes desperdicia mucho
 	# con 2312 Shapes de tamaños dispares, y aquí cada celda cubre 512 voxeles, así que la holgura
 	# cuesta megabytes en vez de cientos.
-	_macro_atlas_dimensions = _plan_atlas(
+	var candidate_dimensions := _plan_atlas(
 		max_macro_x, max_macro_y, total_macro_volume * 4, MAX_MACRO_ATLAS_CELLS, 512
 	)
-	_macros.resize(
-		_macro_atlas_dimensions.x * _macro_atlas_dimensions.y * _macro_atlas_dimensions.z
-	)
-	_macros.fill(0)
-	_slots.clear()
-	_reset_packer()
-	var dropped: Array[VoxelShape3D] = []
-	for shape in _shapes:
-		if not _allocate_shape(shape):
-			dropped.append(shape)
-			continue
-		_copy_macros_to_cpu_atlas(shape)
-	if not dropped.is_empty():
-		push_warning("VoxelRenderSystem: %d de %d Shapes no caben en el atlas (%d/%d bricks)"
-			% [dropped.size(), _shapes.size(), _bricks.get_used(), _bricks.get_capacity()])
-		for shape in dropped:
-			_shapes.erase(shape)
-	_voxel_atlas.release()
-	_macro_atlas.release()
-	if not _voxel_atlas.create(_bricks.get_dimensions(), _bricks.get_bytes(), true):
+	var layout_ready := false
+	for attempt in 6:
+		_macro_atlas_dimensions = candidate_dimensions
+		_macros = PackedByteArray()
+		_macros.resize(candidate_dimensions.x * candidate_dimensions.y * candidate_dimensions.z)
+		_macros.fill(0)
+		_slots = {}
+		_brick_table = PackedInt32Array()
+		_brick_table_dirty = true
+		_bricks.configure(brick_grid)
+		_reset_packer()
+		layout_ready = true
+		for shape in _shapes:
+			if not _allocate_shape(shape):
+				layout_ready = false
+				break
+			_copy_macros_to_cpu_atlas(shape)
+		if layout_ready:
+			break
+		candidate_dimensions = _grow_macro_atlas(candidate_dimensions)
+		if candidate_dimensions == Vector3i.ZERO:
+			break
+	if not layout_ready:
+		push_error(
+			"VoxelRenderSystem: reconstrucción cancelada; %d Shapes no caben sin perder sincronía"
+			% _shapes.size()
+		)
+		_bricks = previous_bricks
+		_brick_table = previous_brick_table
+		_brick_table_dirty = previous_brick_table_dirty
+		_macros = previous_macros
+		_slots = previous_slots
+		_macro_atlas_dimensions = previous_dimensions
+		_cursor = previous_cursor
+		_shelf_height = previous_shelf_height
+		_layer_depth = previous_layer_depth
 		return false
-	if not _macro_atlas.create(_macro_atlas_dimensions, _macros, true):
+	var candidate_voxels := VoxelAtlas3D.new()
+	var candidate_macros := VoxelAtlas3D.new()
+	if not candidate_voxels.create(_bricks.get_dimensions(), _bricks.get_bytes(), true) \
+			or not candidate_macros.create(_macro_atlas_dimensions, _macros, true):
+		candidate_voxels.release()
+		candidate_macros.release()
+		_bricks = previous_bricks
+		_brick_table = previous_brick_table
+		_brick_table_dirty = previous_brick_table_dirty
+		_macros = previous_macros
+		_slots = previous_slots
+		_macro_atlas_dimensions = previous_dimensions
+		_cursor = previous_cursor
+		_shelf_height = previous_shelf_height
+		_layer_depth = previous_layer_depth
 		return false
+	var previous_voxel_atlas := _voxel_atlas
+	var previous_macro_atlas := _macro_atlas
+	_voxel_atlas = candidate_voxels
+	_macro_atlas = candidate_macros
 	_sync_metadata(true)
+	_refresh_effect_upload_sources()
+	previous_voxel_atlas.release()
+	previous_macro_atlas.release()
 	return true
+
+
+func _refresh_effect_upload_sources() -> void:
+	if effect == null:
+		return
+	var sources: Array = [_voxel_atlas, _macro_atlas]
+	if world != null and world.renderer_settings.sun_shadows_enabled \
+			and shadow_clipmaps != null and is_instance_valid(shadow_clipmaps):
+		sources.append_array(shadow_clipmaps.get_upload_sources())
+	effect.configure_upload_sources(sources)
+
+
+static func _grow_macro_atlas(current: Vector3i) -> Vector3i:
+	var cells := current.x * current.y * current.z
+	if current.z < MAX_ATLAS_DEPTH and cells * 2 <= MAX_MACRO_ATLAS_CELLS:
+		return Vector3i(current.x, current.y, current.z * 2)
+	if current.x < 512 and current.y < 512 and cells * 4 <= MAX_MACRO_ATLAS_CELLS:
+		return Vector3i(current.x * 2, current.y * 2, current.z)
+	return Vector3i.ZERO
 
 
 ## Rejilla del pool de bricks para un número dado de bricks ocupados. Solo crece en Z: X e Y se
@@ -405,6 +541,12 @@ func _on_voxels_changed(
 	shape: VoxelShape3D, _world_aabb: AABB, dirty_min: Vector3i, dirty_max: Vector3i
 ) -> void:
 	var started := Time.get_ticks_usec()
+	# El slot del volumen fuente queda libre antes de registrar sus fragmentos. Antes se esperaba al
+	# barrido de limpieza de un segundo: durante ráfagas se agotaban las 256 hojas reservadas y el
+	# cascote seguía teniendo colisión pero desaparecía hasta que otro slot se liberaba.
+	if shape.voxel_count() == 0:
+		unregister_shape(shape)
+		return
 	if not _slots.has(shape.get_instance_id()) or dirty_min.x < 0:
 		return
 	if not damage_uploads_enabled:
@@ -457,6 +599,7 @@ func _sync_metadata(include_palette: bool) -> void:
 	var entries: Array[Dictionary] = []
 	_entry_indices.clear()
 	_reserved_entry_indices.clear()
+	_entry_glass_capable.clear()
 	_free_entry_indices = PackedInt32Array()
 	var palette_texels := PackedColorArray()
 	if include_palette:
@@ -475,6 +618,7 @@ func _sync_metadata(include_palette: bool) -> void:
 		var palette_row := int(_palette_rows[palette_key])
 		_entry_indices[shape.get_instance_id()] = entries.size()
 		shape.renderer_slot = entries.size()
+		_entry_glass_capable[entries.size()] = _shape_has_glass(shape)
 		entries.append(_entry_for_shape(shape, palette_row))
 		_transforms[shape.get_instance_id()] = shape.global_transform
 		if include_palette:
@@ -484,10 +628,11 @@ func _sync_metadata(include_palette: bool) -> void:
 				palette_texels[palette_row * 512 + material] = colors[material]
 			for material in mini(256, properties.size()):
 				palette_texels[palette_row * 512 + 256 + material] = properties[material]
-	for reserve_offset in FRAGMENT_ENTRY_HEADROOM:
+	for reserve_offset in _reserved_entry_headroom:
 		var entry_index := entries.size()
 		entries.append(_placeholder_entry(entry_index))
 		_reserved_entry_indices[entry_index] = true
+		_entry_glass_capable[entry_index] = true
 		_free_entry_indices.append(entry_index)
 	var grid := _bricks.get_grid()
 	effect.configure_entries(
@@ -542,7 +687,11 @@ func _deactivate_entry_key(key: int) -> void:
 		return
 	var entry_index := int(_entry_indices[key])
 	effect.update_entries([{"index": entry_index, "entry": _placeholder_entry(entry_index)}])
-	if _reserved_entry_indices.has(entry_index) and not _free_entry_indices.has(entry_index):
+	# Una hoja inicial cuya Shape murió es tan reutilizable como una reserva original. Convertirla en
+	# reserva mantiene fija la topología BVH, evita aumentar el coste de recorrido y hace que partir
+	# una Shape recicle su propia hoja en el mismo evento.
+	_reserved_entry_indices[entry_index] = true
+	if not _free_entry_indices.has(entry_index):
 		_free_entry_indices.append(entry_index)
 	_entry_indices.erase(key)
 	_transforms.erase(key)
@@ -557,10 +706,11 @@ func _activate_reserved_entry(shape: VoxelShape3D) -> bool:
 	if _entry_indices.has(key):
 		return true
 	var palette_key := shape.palette.get_instance_id()
-	if _free_entry_indices.is_empty() or not _palette_rows.has(palette_key):
+	var free_offset := _find_free_entry_offset(_shape_has_glass(shape))
+	if free_offset < 0 or not _palette_rows.has(palette_key):
 		return false
-	var entry_index := _free_entry_indices[_free_entry_indices.size() - 1]
-	_free_entry_indices.resize(_free_entry_indices.size() - 1)
+	var entry_index := _free_entry_indices[free_offset]
+	_free_entry_indices.remove_at(free_offset)
 	_entry_indices[key] = entry_index
 	shape.renderer_slot = entry_index
 	_reserved_entry_indices[entry_index] = true
@@ -579,6 +729,14 @@ func _activate_reserved_entry(shape: VoxelShape3D) -> bool:
 		effect.update_brick_table(_brick_table, Vector2i(grid.x, grid.y))
 		_brick_table_dirty = false
 	return true
+
+
+func _find_free_entry_offset(needs_glass: bool) -> int:
+	for offset in range(_free_entry_indices.size() - 1, -1, -1):
+		var entry_index := _free_entry_indices[offset]
+		if not needs_glass or bool(_entry_glass_capable.get(entry_index, false)):
+			return offset
+	return -1
 
 
 func _shape_has_glass(shape: VoxelShape3D) -> bool:

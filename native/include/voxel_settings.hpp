@@ -9,7 +9,11 @@ class VoxelPhysicsBudget : public Resource {
 
     int target_awake_bodies = 128;
     int burst_awake_bodies = 192;
-    int max_boxes_per_body = 128;
+    // Un colapso grande pasa de 84 a 28 hijos Jolt al pedir 64 cajas (la descomposición elige el
+    // siguiente pitch exacto). En Lee conservó la caída y redujo el P95 físico de 7,14 a 6,46 ms.
+    // El límite evita que un árbol/poste recién desprendido monopolice el narrow phase al tocar
+    // simultáneamente suelo y vehículo.
+    int max_boxes_per_body = 64;
     int max_active_boxes = 8192;
     // Hasta 31 voxeles son chips cosméticos. Desde 32 siguen siendo escombros rígidos,
     // seleccionables y agarrables.

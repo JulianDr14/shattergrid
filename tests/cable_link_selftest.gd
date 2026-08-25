@@ -76,6 +76,21 @@ func _run() -> void:
 	_check(joints.live_count() == 1, "y la union con la tuberia sigue viva")
 	_check(joint.node_a != NodePath() and joint.get_node_or_null(joint.node_a)
 			== post.get_physics_body(), "reatada al cuerpo nuevo, no al muerto")
+	var post_rigid := post.get_physics_body() as RigidBody3D
+	var center := post_rigid.to_global(post_rigid.center_of_mass)
+	post_rigid.linear_velocity = Vector3.ZERO
+	post_rigid.angular_velocity = Vector3(0.0, 0.0, 2.0)
+	_check(VoxelRopes._velocity_at(post, center + Vector3.UP * 2.0).x < -3.9,
+		"el amortiguador del cable ve la velocidad angular en la punta del poste")
+	post_rigid.angular_velocity = Vector3.ZERO
+	_check(VoxelBody3D.structural_damping_for_inertia(Vector3(120.0, 4.0, 120.0)).y >= 2.0,
+		"un cuerpo alargado recibe amortiguación angular de poste")
+	(post.get_physics_body() as RigidBody3D).sleeping = true
+	(pipe.get_physics_body() as RigidBody3D).sleeping = true
+	_check(joints.wake_connected(post) == 2 \
+			and not (post.get_physics_body() as RigidBody3D).sleeping \
+			and not (pipe.get_physics_body() as RigidBody3D).sleeping,
+		"despertar el tractor activa también el cuerpo unido del remolque")
 
 	# Un cable entre el poste y un anclaje lejano.
 	var far := _slab(world, Vector3(12.0, 6.0, 0.0), Vector3i(6, 6, 6))
@@ -108,13 +123,20 @@ func _run() -> void:
 	var far_point := Vector3(12.0, 6.0, 0.0)
 	var rest := top.distance_to(far_point)
 	var worst := 0.0
+	var peak_angular_speed := 0.0
 	for _frame in 180:
 		await physics_frame
 		worst = maxf(worst, ropes.point(0, 0).distance_to(far_point))
+		peak_angular_speed = maxf(
+			peak_angular_speed, (post.get_physics_body() as RigidBody3D).angular_velocity.length()
+		)
 	print("  colgando del cable: separacion maxima %.2f m sobre %.2f de reposo" % [worst, rest])
 	_check(worst <= ropes.maximum_separation(0) + 0.05,
 		"el cable tira del poste y no lo deja pasar de su estiramiento maximo")
 	_check(ropes.anchor_pinned(0, "a"), "y sigue clavado mientras aguanta")
+	_check(peak_angular_speed < 20.0 \
+			and (post.get_physics_body() as RigidBody3D).angular_velocity.length() < 4.0,
+		"el poste sujeto por cable cae sin ganar un baile angular inestable")
 
 	# Un tiron mas fuerte de lo que soporta si tiene que romperlo.
 	var rigid := post.get_physics_body() as RigidBody3D

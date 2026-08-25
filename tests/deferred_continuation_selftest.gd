@@ -80,7 +80,8 @@ func _run() -> void:
 	), 0.075, 100.0)
 	var immediate: Array = damage[0].new_bodies if not damage.is_empty() else []
 	_check(immediate.size() == VoxelWorld3D.FRAGMENTS_PER_FRAME,
-		"los tres primeros componentes se crean en el frame del impacto")
+		"los primeros %d componentes se crean en el frame del impacto" \
+			% VoxelWorld3D.FRAGMENTS_PER_FRAME)
 	_check(world._body_of(roof_shape) == roof,
 		"el techo que toca el cuarto componente aún espera su fragmento")
 

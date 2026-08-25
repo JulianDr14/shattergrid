@@ -82,7 +82,7 @@ func _run() -> void:
 		])
 	_check(int(vehicle.voxel_owner.get_meta("voxel_shadow_interval_frames", 1)) \
 			== VoxelVehicle3D.SHADOW_UPDATE_INTERVAL_FRAMES,
-		"la sombra volumétrica vehicular se limita a 15 Hz sin limitar la geometría")
+		"la sombra volumétrica vehicular se limita a 10 Hz sin limitar la geometría")
 	vehicle.linear_velocity = Vector3(2.0, 0.0, 0.0)
 	vehicle.voxel_owner.update_adaptive_ccd()
 	_check(not vehicle.continuous_cd, "CCD permanece apagado a baja velocidad")
@@ -207,7 +207,11 @@ func _run() -> void:
 	player_camera.position = Vector3(0.0, 1.65, 0.0)
 	player.add_child(player_camera)
 	var player_collision := CollisionShape3D.new()
-	player_collision.shape = CapsuleShape3D.new()
+	player_collision.position.y = 0.9
+	var player_capsule := CapsuleShape3D.new()
+	player_capsule.radius = 0.38
+	player_capsule.height = 1.8
+	player_collision.shape = player_capsule
 	player.add_child(player_collision)
 	level.add_child(player)
 	root.add_child(level)
@@ -238,6 +242,21 @@ func _run() -> void:
 		"un segundo E deja al jugador junto al vehículo")
 	_check(is_equal_approx(player_camera.fov, original_fov),
 		"salir restaura el FOV de la cámara a pie")
+
+	# Regresión de la captura: con el coche de lado, su eje local X apunta contra el suelo. La salida
+	# antigua sumaba ese eje al asiento y colocaba la cápsula debajo del mapa al pulsar E en marcha.
+	vehicle.freeze = true
+	vehicle.global_position = Vector3(0.0, 2.0, 0.0)
+	vehicle.rotation = Vector3(0.0, 0.0, PI * 0.5)
+	await physics_frame
+	player.global_position = vehicle.get_seat_position()
+	player.call("_toggle_vehicle")
+	vehicle.linear_velocity = Vector3(9.0, 0.0, 0.0)
+	player.call("_toggle_vehicle")
+	_check(player.global_position.y >= 1.1 \
+			and player.global_position.distance_to(vehicle.global_position) > 1.5,
+		"salir de un coche volcado en movimiento deja al jugador sobre el piso y fuera del compound")
+	vehicle.freeze = false
 
 	vehicle.sleeping = true
 	vehicle.park_after_sleep()

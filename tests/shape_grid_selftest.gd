@@ -107,6 +107,18 @@ func _run() -> void:
 	_check(not _ids(still).has(doomed.get_instance_id()),
 		"y no la devuelve una consulta sobre su propia caja")
 
+	# Un Node puede liberarse antes del barrido periódico de sombras. La rejilla debe poder consultar
+	# y retirar ese Variant muerto sin intentar convertirlo primero a VoxelShape3D.
+	var stale := shapes[8]
+	var stale_id := stale.get_instance_id()
+	var stale_bounds := stale.world_bounds()
+	(stale.get_parent().get_parent() as VoxelBody3D).free()
+	var after_unexpected_free := grid.query(stale_bounds)
+	_check(not _ids(after_unexpected_free).has(stale_id),
+		"una referencia liberada inesperadamente no sale de la consulta")
+	grid.remove_id(stale_id)
+	_check(not grid.has_id(stale_id), "una referencia liberada se puede retirar por id")
+
 	# `_coalesce`: junta lo que se toca, no junta lo que esta lejos.
 	var clipmaps := VoxelShadowClipmaps.new()
 	var juntas: Array[AABB] = [
