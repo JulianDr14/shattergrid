@@ -72,6 +72,7 @@ var _pending_shape_updates := {}
 var _pending_node_updates := {}
 var _pending_glass_shape_updates := {}
 var _pending_glass_node_updates := {}
+var _pending_entry_updates_since_usec := 0
 var _upload_sources: Array = []
 
 
@@ -212,6 +213,37 @@ func get_entry_count() -> int:
 	return _entries.size()
 
 
+## Espejo CPU de la transformada que se empaquetó para una hoja. Permite auditar la última etapa
+## scene -> renderer sin leer de vuelta el buffer Vulkan ni introducir una sincronización de GPU.
+func get_entry_transform(index: int) -> Transform3D:
+	if index < 0 or index >= _entries.size():
+		return Transform3D.IDENTITY
+	return (_entries[index] as Dictionary).get("transform", Transform3D.IDENTITY)
+
+
+## Trabajo de metadatos que el hilo principal ya empaquetó pero el callback de render aún no ha
+## consumido. No lee de vuelta memoria Vulkan ni bloquea la GPU; solo permite distinguir una pose
+## realmente pendiente de una cola ya entregada al RenderingDevice.
+func get_pending_gpu_update_count() -> int:
+	_configuration_mutex.lock()
+	var count := _pending_shape_updates.size() + _pending_node_updates.size() \
+		+ _pending_glass_shape_updates.size() + _pending_glass_node_updates.size()
+	if not _pending_configuration.is_empty():
+		count += 1
+	_configuration_mutex.unlock()
+	return count
+
+
+## Edad del batch de transforms más antiguo aún no consumido. Una cola no vacía durante movimiento
+## es normal —se prepara antes del callback del mismo frame—; una edad creciente sí señala que el
+## render dejó de seguir a física.
+func get_pending_gpu_update_age_ms() -> float:
+	_configuration_mutex.lock()
+	var since := _pending_entry_updates_since_usec
+	_configuration_mutex.unlock()
+	return (Time.get_ticks_usec() - since) / 1000.0 if since > 0 else 0.0
+
+
 static func _topology_must_rebuild(
 	topology_empty: bool, old_entry_count: int, new_entry_count: int, palette_changed: bool
 ) -> bool:
@@ -275,6 +307,10 @@ func update_entries(updates: Array[Dictionary]) -> bool:
 					_glass_bvh_topology[node_index]
 				)
 	_configuration_mutex.lock()
+	if _pending_shape_updates.is_empty() and _pending_node_updates.is_empty() \
+			and _pending_glass_shape_updates.is_empty() \
+			and _pending_glass_node_updates.is_empty():
+		_pending_entry_updates_since_usec = Time.get_ticks_usec()
 	_pending_shape_updates.merge(shape_updates, true)
 	_pending_node_updates.merge(node_updates, true)
 	_pending_glass_shape_updates.merge(glass_shape_updates, true)
@@ -426,6 +462,7 @@ func _apply_pending_configuration() -> void:
 	_pending_node_updates.clear()
 	_pending_glass_shape_updates.clear()
 	_pending_glass_node_updates.clear()
+	_pending_entry_updates_since_usec = 0
 	_configuration_mutex.unlock()
 	if configuration.is_empty() and shape_updates.is_empty() and node_updates.is_empty() \
 			and glass_shape_updates.is_empty() and glass_node_updates.is_empty():

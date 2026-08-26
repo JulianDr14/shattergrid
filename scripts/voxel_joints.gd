@@ -28,9 +28,11 @@ var _records: Array[Dictionary] = []
 var _by_body := {}
 var broken_by_destruction := 0
 var broken_by_force := 0
+var _world: VoxelWorld3D
 
 
 func setup(world: VoxelWorld3D) -> void:
+	_world = world
 	world.body_split.connect(_on_body_split)
 	world.body_unregistered.connect(_on_body_unregistered)
 	world.voxel_impact.connect(
@@ -144,6 +146,10 @@ func break_record(record: Dictionary) -> bool:
 			body.release_physics_hold(record.get("physics_hold_key", ""))
 			_unindex(record, body)
 			body.wake_for_interaction()
+			# `wake_for_interaction` solo revive cuerpos ya retirados. Una pieza STATIC sujeta unicamente
+			# por este joint sigue estatica hasta que alguien vuelve a evaluar su soporte.
+			if _world != null and is_instance_valid(_world):
+				_world.queue_support_check(body)
 	record_broken.emit(record)
 	return true
 

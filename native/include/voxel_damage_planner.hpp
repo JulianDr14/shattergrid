@@ -14,8 +14,6 @@ namespace godot {
 class VoxelDamagePlanner : public Resource {
     GDCLASS(VoxelDamagePlanner, Resource)
 
-    static bool component_near(const Dictionary &p_component, const Vector3 &p_center, double p_reach);
-
 protected:
     static void _bind_methods();
 
@@ -23,9 +21,7 @@ public:
     Dictionary damage_shape(const Ref<VoxelShapeData> &p_data, const Vector3 &p_center_voxels,
             double p_radius_voxels, double p_energy, const PackedFloat32Array &p_hardnesses,
             double p_foundation_threshold, bool p_anchored, int p_guard_margin = 16) const;
-    Array plan_detached_components(const Array &p_components, bool p_shape_anchored,
-            bool p_source_dynamic, const Vector3 &p_damage_voxel, double p_local_reach,
-            int p_particle_voxel_limit) const;
+    Array plan_detached_components(const Array &p_components, int p_particle_voxel_limit) const;
 };
 
 } // namespace godot

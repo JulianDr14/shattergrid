@@ -11,8 +11,7 @@ void VoxelDamagePlanner::_bind_methods() {
                                  "energy", "hardnesses", "foundation_threshold", "anchored",
                                  "guard_margin"),
             &VoxelDamagePlanner::damage_shape, DEFVAL(16));
-    ClassDB::bind_method(D_METHOD("plan_detached_components", "components", "shape_anchored",
-                                 "source_dynamic", "damage_voxel", "local_reach",
+    ClassDB::bind_method(D_METHOD("plan_detached_components", "components",
                                  "particle_voxel_limit"),
             &VoxelDamagePlanner::plan_detached_components);
 }
@@ -51,25 +50,15 @@ Dictionary VoxelDamagePlanner::damage_shape(const Ref<VoxelShapeData> &p_data,
     return result;
 }
 
-bool VoxelDamagePlanner::component_near(
-        const Dictionary &p_component, const Vector3 &p_center, double p_reach) {
-    const Vector3 low = Vector3(p_component.get("minimum", Vector3i()));
-    const Vector3 high = Vector3(Vector3i(p_component.get("maximum", Vector3i())) + Vector3i(1, 1, 1));
-    const Vector3 closest = p_center.clamp(low, high);
-    return closest.distance_squared_to(p_center) <= p_reach * p_reach;
-}
-
-Array VoxelDamagePlanner::plan_detached_components(const Array &p_components,
-        bool p_shape_anchored, bool p_source_dynamic, const Vector3 &p_damage_voxel,
-        double p_local_reach, int p_particle_voxel_limit) const {
+// Sin filtro de cercania al crater. Una isla desconectada lejos del impacto tampoco tiene ruta a
+// tierra, y saltarsela la dejaba soldada al aire para siempre: `_drop_unsupported` trabaja por
+// Shape, no por componente, asi que nadie volvia a mirarla.
+Array VoxelDamagePlanner::plan_detached_components(
+        const Array &p_components, int p_particle_voxel_limit) const {
     Array result;
     for (int index = 0; index < p_components.size(); ++index) {
         const Dictionary component = p_components[index];
         if (static_cast<bool>(component.get("anchored", false))) {
-            continue;
-        }
-        const bool near_damage = component_near(component, p_damage_voxel, p_local_reach);
-        if (!p_shape_anchored && !p_source_dynamic && !near_damage) {
             continue;
         }
         const int count = component.get("voxel_count", 0);
@@ -79,7 +68,6 @@ Array VoxelDamagePlanner::plan_detached_components(const Array &p_components,
         Dictionary decision;
         decision["component_index"] = index;
         decision["count"] = count;
-        decision["near_damage"] = near_damage;
         decision["particle_candidate"] = count <= p_particle_voxel_limit;
         result.append(decision);
     }

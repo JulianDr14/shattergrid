@@ -104,6 +104,28 @@ func _run() -> void:
 	_check(world._body_of(left) == world._body_of(right),
 		"lo que nunca se toco no se separa al recibir un impacto")
 
+	# El caso de Lee: el mismo cuerpo de tres tramos, pero con un joint colgando. La retencion del
+	# constraint impedia partirlo, y lo que se veia era medio poste flotando "unido" por el RigidBody
+	# a la mitad que el joint sujetaba.
+	var jointed := VoxelBody3D.new()
+	jointed.state = VoxelBody3D.State.DYNAMIC
+	world.add_child(jointed)
+	_add_section(jointed, Vector3(40.0, 8.0, 0.0))
+	var jointed_middle := _add_section(jointed, Vector3(41.0, 8.0, 0.0))
+	_add_section(jointed, Vector3(42.0, 8.0, 0.0))
+	world.register_body(jointed)
+	jointed.acquire_physics_hold("joint:test")
+	for _frame in 5:
+		await physics_frame
+	var before := world.get_dynamic_bodies().size()
+	world.damage_sphere(jointed_middle.world_bounds().get_center(), 1.2, 60.0)
+	for _frame in 10:
+		await physics_frame
+		world._process(1.0 / 60.0)
+	var after := world.get_dynamic_bodies().size()
+	print("  con joint: cuerpos %d -> %d" % [before, after])
+	_check(after > before, "un joint no impide separar los tramos que ya no se tocan")
+
 	if failures == 0:
 		print("VOXEL_LOOSE_SHAPES_SELFTEST_OK")
 	else:

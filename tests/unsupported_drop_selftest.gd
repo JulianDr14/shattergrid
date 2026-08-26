@@ -287,6 +287,37 @@ func _run() -> void:
 	_check(long_chain_hosts.size() == 1,
 		"la cadena larga usa un único RigidBody en vez de cuarenta (%d)" % long_chain_hosts.size())
 
+	# La reja de Lee: una barra authored que solo se sostiene metida en un pilar de roca. El jugador
+	# vuela el voxel de union y la reja se queda en el aire. El contacto se pregunta con un alcance de
+	# `ceil(CONTACT_MARGIN / voxel_size)` voxeles: con 0.12 sobre voxeles de 0.1 el alcance era DOS, o
+	# sea que una capa entera de aire entre las dos piezas seguia contando como union. Volar la union
+	# no soltaba nada porque nunca habia nada que soltar.
+	var world_fence := VoxelWorld3D.new()
+	world_fence.show_diagnostics = false
+	world_fence.physics_budget = VoxelPhysicsBudget.new()
+	root.add_child(world_fence)
+	_slab(world_fence, Vector3.ZERO, Vector3i(20, 4, 20), 1000000.0)
+	_slab(world_fence, Vector3(0.0, 2.2, 0.0), Vector3i(4, 40, 4), 1000000.0)
+	# Barra de 3 m pegada a la cara del pilar, a 3 m del suelo: su unico camino al cimiento es el pilar.
+	var fence := _slab(world_fence, Vector3(1.7, 3.0, 0.0), Vector3i(30, 2, 2))
+	var fence_shape := fence.get_shapes()[0]
+	for _frame in 6:
+		await physics_frame
+	var fence_height := fence_shape.world_bounds().get_center().y
+	_check(fence.state == VoxelBody3D.State.STATIC, "la reja empotrada en el pilar se queda quieta")
+	# Se borra exactamente la columna de union (0,25 m), sin tocar el pilar de roca.
+	world_fence.damage_sphere(Vector3(0.25, 3.0, 0.0), 0.11, 100.0)
+	for _frame in 4:
+		await physics_frame
+	var fence_owner := world_fence._body_of(fence_shape)
+	_check(fence_owner != null and fence_owner.state == VoxelBody3D.State.DYNAMIC,
+		"y cae al volarle la union, con el pilar todavia en pie")
+	for _frame in 40:
+		await physics_frame
+	var fence_fallen := fence_height - fence_shape.world_bounds().get_center().y
+	print("  la reja bajo %.2f m" % fence_fallen)
+	_check(fence_fallen > 0.3, "cae de verdad, no solo de estado")
+
 	if failures == 0:
 		print("VOXEL_UNSUPPORTED_DROP_SELFTEST_OK")
 	else:

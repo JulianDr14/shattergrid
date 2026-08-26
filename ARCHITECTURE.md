@@ -146,18 +146,19 @@ agotarse: una búsqueda larga termina exactamente. `RETIRED_STATIC` no participa
 Colisión, AABB o proximidad solo generan candidatos; `touches`/`component_touches` comprueban voxeles
 vivos a ambos lados.
 
-La caché de raíz no es un booleano eterno: guarda el número exacto de voxeles de cimiento vivos por
-Shape. `VoxelShapeData` mantiene un histograma de 256 materiales y cada daño informa cuántas raíces
-eliminó, por lo que quitar la última piedra invalida el soporte en O(1) sin volver a recorrer una
-torre o un terreno completos. Los índices de raíz originales pueden permanecer cacheados porque la
-clasificación ignora automáticamente los que ya son aire.
+La caché de raíz no es un booleano eterno: cada `VoxelShape3D` guarda el número exacto de voxeles de
+cimiento vivos y la revisión para la que se calculó. `VoxelShapeData` mantiene un histograma de 256
+materiales, por lo que quitar la última piedra invalida el soporte en O(1) sin volver a recorrer una
+torre o un terreno completos. El dato vive junto a la Shape y no en el World para no sobrevivir a
+un cambio de ownership o a una mutación con revisión nueva.
 
 La destrucción conserva antes del cambio únicamente los contactos que atraviesan el cubo local del
-cráter. Después clasifica en C++ una sola vez y comprueba soporte externo solo para componentes
-cercanas al daño. En la Shape real de 1,6 M voxeles del banco, esto redujo la llamada estable de
-82,5 ms a 6,4 ms: el flood-fill completo cuesta ~2,5 ms y ya no se extraen contactos de toda la
-Shape. `_static_contacts` sigue cacheando las rutas entre Shapes; la caché se invalida en ambas
-direcciones mediante `_contact_users`.
+cráter. Después clasifica en C++ una sola vez y comprueba soporte externo de los componentes que no
+tienen raíz propia. Los pares cuyo enlace atravesaba el cráter se revalidan con 9 cm; los enlaces
+authored alejados conservan los 12 cm de holgura que necesita Lee. Separar esos dos márgenes evita
+que una reja cruce por tolerancia el voxel recién borrado sin desarmar antes de tiempo la cabeza y
+el mástil de una torre. `_static_contacts` sigue cacheando las rutas entre Shapes; la caché se
+invalida en ambas direcciones mediante `_contact_users`.
 
 Una cadena entera sin apoyo se convierte en dinámica como **un solo** `RigidBody3D`
 (`_merge_dropped_chain`), sin el antiguo corte por cantidad de Shapes que convertía una tubería de
@@ -275,15 +276,20 @@ soporte esperan a que esa cola termine. Esto corrige el techo de Lee que podía 
 ruta distinta y quedar suspendido.
 
 Si varios Bodies estructurales del mismo batch pertenecían antes a una misma familia rígida y aún
-conservan contacto material, se coalescen una sola vez después del handoff. El linaje de cada Shape
-impide volver a soldar dos mitades del mismo volumen separadas por el cráter; la familia impide unir
-dos cascotes o edificios que simplemente chocaron durante la explosión.
+conservan contacto material, se coalescen una sola vez antes de liberar sus handoffs. Esperar a que
+cada fragmento se activase permitía que dos partes de la misma torre recibieran impulsos divergentes
+y perdieran el contacto antes de agruparse. El linaje de cada Shape impide volver a soldar dos
+mitades del mismo volumen separadas por el cráter; la familia impide unir dos cascotes o edificios
+que simplemente chocaron durante la explosión.
 
 Separar estática de dinámica usa un handoff explícito. El fragmento nace congelado y con filtros de
-colisión a cero mientras la colisión estática vieja se reconstruye prioritariamente. Cuando todos
-los bloques alcanzan la revisión objetivo, los Bodies absorbidos salieron de Jolt y pasó un physics
-tick de seguridad, se restauran filtros, se descongela y se aplica el impulso almacenado. Así no hay
-ni agujero temporal para jugador/vehículos/raycasts ni colisión doble contra la geometría anterior.
+colisión a cero. Los bloques estáticos sucios deshabilitan sus `CollisionShape3D` viejos al encolar
+la reconstrucción; después de ese retiro y un physics tick de seguridad se restauran los filtros del
+fragmento, se descongela y se aplica el impulso almacenado. La reconstrucción corregida sigue con
+prioridad y vuelve a habilitar cada bloque al instalar sus caras. Separar "geometría vieja retirada"
+de "revisión totalmente cocinada" evita tanto colisión doble como fragmentos congelados durante
+cientos de frames en un mapa grande. Cancelar un handoff por retiro del Body nunca reactiva sus
+capas, así que tampoco aparece un collider fantasma durante el `queue_free` de fin de frame.
 La misma regla cubre una torre o poste completo que cambia de `StaticBody3D` a `RigidBody3D`, aunque
 no exista una Shape fuente parcialmente recortada. El CCD permanece activo para postes, piezas
 pequeñas y cuerpos rápidos; una torre grande por debajo de 14 m/s lo desactiva para no barrer cada
@@ -518,7 +524,10 @@ una torre que pierde su apoyo, un tramo suelto que estrena cuerpo — porque en 
 todavía era estático. El cuerpo caía de verdad en Jolt, pero su transformada nunca volvía a subirse
 a la GPU: quedaba un fantasma dibujado en el sitio de antes, atravesable e indestructible porque los
 voxeles reales ya estaban en otro lado. Igual que la caché de la clipmap de sombras, se filtra a
-cuerpos despiertos (con un frame de gracia al que acaba de dormirse).
+cuerpos despiertos. Dos frames de gracia sellan la pose canónica al dormir; además, una
+reconciliación de Bodies dinámicos dormidos a 1 Hz cubre reposicionamientos de joints/controladores
+que no generan otra señal `awake`. El HUD y `get_coherence_snapshot()` comparan registro, slot,
+entrada GPU y pose final, y distinguen `COHERENT`, `PENDING` y `DESYNC`.
 
 ## Sombras voxel
 
@@ -589,9 +598,12 @@ godot --headless --path . --script res://tests/loose_shapes_selftest.gd
 godot --headless --path . --script res://tests/moving_shapes_selftest.gd
 godot --headless --path . --script res://tests/live_props_selftest.gd
 godot --headless --path . --script res://tests/unsupported_drop_selftest.gd
+godot --headless --path . --script res://tests/far_island_drop_selftest.gd
 godot --headless --path . --script res://tests/deferred_continuation_selftest.gd
 godot --headless --path . --script res://tests/collision_handoff_selftest.gd
 godot --headless --path . --script res://tests/tower_parts_probe.gd
+godot --path . --script res://tests/tower_parts_probe.gd -- --renderer
+godot --headless --path . --script res://tests/tower_contact_probe.gd
 godot --headless --path . --script res://tests/large_collapse_probe.gd
 godot --headless --path . --script res://tests/support_search_probe.gd
 godot --headless --path . --script res://tests/compiled_map_cache_probe.gd -- --rebuild-teardown-cache
@@ -645,6 +657,25 @@ Resultado medido el 2026-08-23 con la GDExtension `Release`, Godot 4.7.2 oficial
   vacíos/handoffs/fragmentos críticos y descenso de 3,17 m; ningún cable interno aplica tensión y
   la física de recuperación queda en 7,07 ms P95. En el probe de 12 impactos la peor
   conectividad queda en 8,71 ms y la peor llamada total en 19,35 ms, con cero fallbacks.
+
+Auditoría de destrucción/sincronización del 2026-08-25, también sobre Lee completo y el mismo
+hardware:
+
+- censo de 79.348.954 voxeles, 2.252 Shapes importadas (2.321 entradas con visuales auxiliares),
+  31.314 bloques de colisión, 465 joints y 79 cables; cero Shapes invisibles con collider y cero
+  entradas ausentes/huérfanas;
+- con caché caliente y colisión desactivada para aislar destrucción CPU: importación en 7,32 s,
+  cráter denso en 4,39 ms y llamada estable en 4,58 ms, con split 0,51 ms, soporte externo 0,41 ms,
+  contactos de soporte 0,34 ms y rutas 0,03 ms;
+- al destruir la base real de la torre, cabeza y mástil se coalescen en un Body de 12.226 voxeles,
+  14 cajas y 9.381,5 kg; baja 4,14 m, no deja handoffs/fragmentos/rebuilds pendientes y conserva los
+  dos joints del poste de tubería;
+- con Forward+ Vulkan real, las 2.321 poses quedan `COHERENT`: cero discrepancias escena/cola y la
+  actualización pendiente del Body en movimiento tiene menos de un frame de antigüedad,
+  error de pose de la torre 0,0000 m y sincronización de transforms 0,50 ms P95. La física durante
+  la recuperación visual completa mide 23,94 ms P95 (el solver de los ocho cables consume 0,93 ms);
+  esta prueba mantiene activos mapa, renderer,
+  79 cables y reconstrucción de colisión, por lo que no es comparable con el probe aislado anterior.
 
 La integración se basa en la API pública Body/Shape de Teardown y en los puntos de extensión de
 render de Godot; no usa código propietario de Teardown.

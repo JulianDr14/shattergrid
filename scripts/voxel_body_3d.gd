@@ -39,7 +39,6 @@ var _pending_static_collisions: Array[Dictionary] = []
 var _pending_static_collision_keys := {}
 var _pending_dynamic_collision := false
 var _constraint_holds := {}
-var _collision_revision_by_shape := {}
 var _handoff_collision_layer := 1
 var _handoff_collision_mask := 1
 var _handoff_impulses: Array[Dictionary] = []
@@ -314,8 +313,19 @@ func complete_collision_handoff(
 	runtime_state_changed.emit(self)
 
 
+## Cierra un ticket porque este Body va a desaparecer. No restaura capas ni lo descongela: hacerlo
+## durante `unregister_body` reactiva por un frame la colisión estática fantasma que el handoff
+## precisamente mantenía aislada.
+func cancel_collision_handoff() -> void:
+	if not collision_handoff_pending:
+		return
+	collision_handoff_pending = false
+	_handoff_impulses.clear()
+	runtime_state_changed.emit(self)
+
+
 func get_collision_revision(shape: VoxelShape3D) -> int:
-	return int(_collision_revision_by_shape.get(shape.get_instance_id(), 0))
+	return shape.collision_revision if is_instance_valid(shape) else 0
 
 
 func is_static_collision_revision_pending(shape: VoxelShape3D, target_revision: int) -> bool:
@@ -326,9 +336,25 @@ func is_static_collision_revision_pending(shape: VoxelShape3D, target_revision: 
 	return _has_pending_static_collision_for_shape(shape)
 
 
+## El handoff solo necesita saber si todavía queda colisión VIEJA habilitada. La revisión completa
+## puede seguir pendiente mientras se recocinan las caras nuevas; los bloques del cráter se
+## desactivan al encolarlos y Jolt los retira en el tick seguro que ya exige el ticket.
+func is_static_collision_handoff_pending(shape: VoxelShape3D, _target_revision: int) -> bool:
+	if shape == null or not is_instance_valid(shape):
+		return false
+	var prefix := "%d:" % shape.get_instance_id()
+	for key: String in _pending_static_collision_keys:
+		if not key.begins_with(prefix):
+			continue
+		var collision := _macro_collisions.get(key) as CollisionShape3D
+		if collision != null and is_instance_valid(collision) and not collision.disabled:
+			return true
+	return false
+
+
 func acknowledge_static_collision_revision(shape: VoxelShape3D) -> void:
 	if shape != null and shape.data != null:
-		_collision_revision_by_shape[shape.get_instance_id()] = shape.content_revision()
+		shape.collision_revision = shape.content_revision()
 
 
 ## RID que representan físicamente a este Body. En dinámico es uno; en estático incluye los shards
@@ -408,7 +434,7 @@ func rebuild_static_collision(
 	# Reparto entre lo que se puede hilar (generar caras, C++ puro) y lo que no (crear la forma y
 	# darsela a Jolt, que exige el hilo principal).
 	last_faces_ms = faces_usec / 1000.0
-	_collision_revision_by_shape[shape.get_instance_id()] = shape.content_revision()
+	shape.collision_revision = shape.content_revision()
 
 
 ## Destruction must not hand several new triangle BVHs to Jolt in the same frame. The visual atlas
@@ -424,6 +450,11 @@ func queue_static_collision_rebuild(
 	var lod := static_collision_lod_for(shape)
 	for macro: Vector3i in _static_collision_blocks(shape, dirty_min, dirty_max, block):
 		var key := _static_collision_key(shape, macro)
+		# Se retira primero la geometría vieja. Así un fragmento no espera cientos de cocciones para
+		# empezar a caer y tampoco puede chocar contra los voxeles que acaba de abandonar.
+		var stale := _macro_collisions.get(key) as CollisionShape3D
+		if stale != null and is_instance_valid(stale):
+			stale.disabled = true
 		if _pending_static_collision_keys.has(key):
 			_pending_static_collision_keys[key] = shape.content_revision()
 			continue
@@ -462,9 +493,7 @@ func flush_one_static_collision_rebuild() -> float:
 		last_faces_ms = (Time.get_ticks_usec() - faces_started) / 1000.0
 		collision_rebuild_ms = (Time.get_ticks_usec() - started) / 1000.0
 		if not _has_pending_static_collision_for_shape(shape):
-			_collision_revision_by_shape[shape.get_instance_id()] = maxi(
-				target_revision, shape.content_revision()
-			)
+			shape.collision_revision = maxi(target_revision, shape.content_revision())
 		return collision_rebuild_ms
 	return 0.0
 
@@ -578,6 +607,8 @@ func _install_static_collision_faces(
 		collision = installed
 		_collision_nodes.append(collision)
 		_macro_collisions[key] = collision
+	if collision != null and is_instance_valid(collision):
+		collision.disabled = false
 
 
 ## Extrae las caras iniciales ya fusionadas para el compilado offline del mapa. No se guardan RIDs
@@ -678,10 +709,11 @@ func rebuild_dynamic_collision(max_boxes := 128) -> void:
 			_collision_nodes.append(collision)
 	compound_boxes = int(installed.count)
 	_apply_mass_properties()
-	var shape_ids: PackedInt64Array = installed.shape_ids
-	var revisions: PackedInt64Array = installed.revisions
-	for index in mini(shape_ids.size(), revisions.size()):
-		_collision_revision_by_shape[shape_ids[index]] = revisions[index]
+	# Se sella cada Shape del cuerpo, no solo las que el instalador llego a meter: una Shape truncada
+	# por el presupuesto de cajas se quedaba en revision 0 y el registro la reportaba desincronizada
+	# para siempre.
+	for shape in shapes:
+		shape.collision_revision = shape.content_revision()
 	collision_rebuild_ms = (Time.get_ticks_usec() - started) / 1000.0
 	runtime_state_changed.emit(self)
 
@@ -706,10 +738,31 @@ func apply_explosion_impulse(center: Vector3, energy: float, radius: float) -> v
 	var world_center_of_mass := rigid.to_global(rigid.center_of_mass)
 	var offset := world_center_of_mass - center
 	var distance := offset.length()
-	if distance >= radius or distance < 0.001:
+	var structural_detachment := structural and continuous_collision
+	var surface_distance := INF
+	if structural_detachment:
+		for shape in get_shapes():
+			var bounds := shape.world_bounds()
+			surface_distance = minf(
+				surface_distance,
+				center.distance_to(center.clamp(bounds.position, bounds.end))
+			)
+	var effective_distance := minf(distance, surface_distance) \
+		if structural_detachment else distance
+	if effective_distance >= radius or distance < 0.001:
 		return
-	var falloff := 1.0 - distance / radius
+	var falloff := 1.0 - effective_distance / radius
 	rigid.apply_central_impulse(offset / distance * energy * rigid.mass * falloff * 0.12)
+	if structural_detachment:
+		# Un poste perfectamente vertical puede aterrizar otra vez sobre su tocón si solo recibe fuerza
+		# central. Una componente horizontal determinista representa la asimetría real del corte y le da
+		# el par mínimo para volcar, sin depender del orden de los Bodies ni de ruido aleatorio.
+		var horizontal := Vector3(offset.x, 0.0, offset.z)
+		if horizontal.length_squared() < 0.0001:
+			var angle := float(get_instance_id() % 6283) * 0.001
+			horizontal = Vector3(cos(angle), 0.0, sin(angle))
+		var tip_axis := Vector3.UP.cross(horizontal.normalized()).normalized()
+		rigid.apply_torque_impulse(tip_axis * energy * rigid.mass * falloff * 0.25)
 	rigid.sleeping = false
 	last_interaction_msec = Time.get_ticks_msec()
 	runtime_state_changed.emit(self)
@@ -755,6 +808,9 @@ func _replace_physics_body(dynamic: bool) -> void:
 	for shape in shapes:
 		shape.reparent(self, true)
 	_clear_collisions()
+	# La colision que sellaba estas revisiones acaba de irse con el cuerpo anterior.
+	for shape in shapes:
+		shape.collision_revision = 0
 	if _physics_body != null:
 		_physics_body.queue_free()
 	_create_physics_body(dynamic)
@@ -777,7 +833,6 @@ func _clear_collisions() -> void:
 	_static_collision_shards.clear()
 	_pending_static_collisions.clear()
 	_pending_static_collision_keys.clear()
-	_collision_revision_by_shape.clear()
 	compound_boxes = 0
 
 

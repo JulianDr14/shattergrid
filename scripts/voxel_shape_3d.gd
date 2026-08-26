@@ -31,6 +31,15 @@ var last_damage_native_ms := 0.0
 var last_damage_notify_ms := 0.0
 ## Última revisión cuya mutación atravesó este wrapper y emitió `voxels_changed`.
 var last_notified_revision := 0
+## Estado por Shape que antes vivía en el VoxelBody3D dueño. Un fragmento cambia de cuerpo varias
+## veces (detach, absorción, retirada) y ese estado no viajaba con él: el dueño nuevo devolvía 0 y
+## la colisión vieja se quedaba en Jolt para siempre. Vive aquí porque describe a la Shape, no al
+## cuerpo que la sostiene ahora mismo.
+var collision_revision := 0
+## Conteo cacheado de voxeles de dureza >= umbral de cimiento, válido solo para `foundation_revision`.
+var foundation_count := 0
+var foundation_revision := -1
+var _foundation_threshold := -1.0
 static var _damage_planner := VoxelDamagePlanner.new()
 
 
@@ -117,12 +126,32 @@ func damage_sphere(
 	last_damage_native_ms = (Time.get_ticks_usec() - native_started) / 1000.0
 	var notify_started := Time.get_ticks_usec()
 	if int(result.get("removed", 0)) > 0:
+		# El recuento de cimiento se mantiene O(1) restando lo que el planner acaba de quitar. Sin
+		# esto habria que reescanear el volumen denso entero en cada disparo.
+		if foundation_revision >= 0 and is_equal_approx(_foundation_threshold, foundation_threshold):
+			foundation_count = maxi(
+				0, foundation_count - int(result.get("removed_foundation", 0))
+			)
+			foundation_revision = content_revision()
 		last_notified_revision = content_revision()
 		voxels_changed.emit(
 			world_bounds(), result.dirty_min as Vector3i, result.dirty_max as Vector3i
 		)
 	last_damage_notify_ms = (Time.get_ticks_usec() - notify_started) / 1000.0
 	return result
+
+
+## Cimiento = conserva al menos un voxel de dureza >= umbral. El recuento nativo solo se repite
+## cuando la revisión cacheada quedó obsoleta, asi que un disparo normal sigue siendo O(1).
+func foundation_voxel_count(threshold: float) -> int:
+	if data == null or palette == null:
+		return 0
+	var revision := content_revision()
+	if foundation_revision != revision or not is_equal_approx(_foundation_threshold, threshold):
+		foundation_count = data.count_hardness_at_least(palette.get_hardnesses(), threshold)
+		foundation_revision = revision
+		_foundation_threshold = threshold
+	return foundation_count
 
 
 func classified_components(external_anchors := PackedInt32Array()) -> Array:

@@ -100,6 +100,27 @@ func _run() -> void:
 		and transition_rigid.collision_layer != 0 and transition_rigid.collision_mask != 0,
 		"la transición completa se activa tras un physics tick seguro")
 
+	# Si un fragmento se absorbe/retira antes de completar, cancelar el ticket no puede reactivar la
+	# colisión fantasma durante el frame en el que el nodo espera su queue_free.
+	var cancelled := VoxelBody3D.new()
+	world.add_child(cancelled)
+	var cancelled_shape := VoxelShape3D.new()
+	cancelled_shape.data = VoxelShapeData.new()
+	var cancelled_cells := PackedByteArray()
+	cancelled_cells.resize(8)
+	cancelled_cells.fill(1)
+	cancelled_shape.data.set_cells(Vector3i(2, 2, 2), cancelled_cells)
+	cancelled_shape.palette = shape.palette
+	cancelled.add_voxel_shape(cancelled_shape)
+	world.register_body(cancelled)
+	cancelled.make_dynamic(4)
+	var cancelled_rigid := cancelled.get_physics_body() as RigidBody3D
+	world.unregister_body(cancelled)
+	_check(not cancelled.collision_handoff_pending and cancelled_rigid.freeze \
+		and cancelled_rigid.collision_layer == 0 and cancelled_rigid.collision_mask == 0,
+		"cancelar un handoff retirado no revive su collider fantasma")
+	cancelled.queue_free()
+
 	# Una escritura directa al Resource no emite la señal del wrapper: debe verse al instante.
 	var direct_changed := shape.data.set_cell(0, 0, 0, 0)
 	var desync := world.get_physics_coherence_snapshot()

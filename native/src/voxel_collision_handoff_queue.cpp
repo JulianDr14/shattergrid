@@ -15,13 +15,24 @@ uint64_t object_id_from_variant(const Variant &p_value) {
     return object != nullptr ? object->get_instance_id() : 0;
 }
 
-bool source_revision_pending(Object *p_source, Object *p_shape, int64_t p_revision) {
+bool source_rebuild_pending(Object *p_source, Object *p_shape, int64_t p_revision) {
     if (p_source == nullptr || p_shape == nullptr ||
             !p_source->has_method("is_static_collision_revision_pending")) {
         return false;
     }
     return static_cast<bool>(p_source->call(
             "is_static_collision_revision_pending", p_shape, p_revision));
+}
+
+bool source_handoff_pending(Object *p_source, Object *p_shape, int64_t p_revision) {
+    if (p_source == nullptr || p_shape == nullptr) {
+        return false;
+    }
+    if (p_source->has_method("is_static_collision_handoff_pending")) {
+        return static_cast<bool>(p_source->call(
+                "is_static_collision_handoff_pending", p_shape, p_revision));
+    }
+    return source_rebuild_pending(p_source, p_shape, p_revision);
 }
 
 } // namespace
@@ -47,11 +58,12 @@ void VoxelCollisionHandoffQueue::clear() {
 }
 
 int VoxelCollisionHandoffQueue::size() const {
-    return static_cast<int>(tickets.size());
+    return static_cast<int>(std::count_if(tickets.begin(), tickets.end(),
+            [](const Ticket &ticket) { return !ticket.fragment_released; }));
 }
 
 bool VoxelCollisionHandoffQueue::is_empty() const {
-    return tickets.empty();
+    return size() == 0;
 }
 
 bool VoxelCollisionHandoffQueue::contains_fragment(Object *p_fragment) const {
@@ -98,6 +110,12 @@ void VoxelCollisionHandoffQueue::remove_body(Object *p_body) {
     for (int index = static_cast<int>(tickets.size()) - 1; index >= 0; --index) {
         Ticket &ticket = tickets[static_cast<size_t>(index)];
         if (ticket.fragment_id == id) {
+            // El ticket es lo unico que iba a limpiar `collision_handoff_pending`. Se cancela sin
+            // reactivar capas: `remove_body` solo se usa al retirar el nodo y completar el handoff
+            // volveria a habilitar su colision fantasma hasta el queue_free de fin de frame.
+            if (p_body->has_method("cancel_collision_handoff")) {
+                p_body->call("cancel_collision_handoff");
+            }
             tickets.erase(tickets.begin() + index);
             continue;
         }
@@ -115,7 +133,8 @@ Object *VoxelCollisionHandoffQueue::select_pending_source() const {
     for (const Ticket &ticket : tickets) {
         Object *source = ObjectDB::get_instance(ticket.source_body_id);
         Object *shape = ObjectDB::get_instance(ticket.source_shape_id);
-        if (source_revision_pending(source, shape, ticket.source_revision)) {
+        // Sigue priorizando la reconstruccion completa aunque el handoff ya pueda liberarse.
+        if (source_rebuild_pending(source, shape, ticket.source_revision)) {
             return source;
         }
     }
@@ -133,8 +152,14 @@ Array VoxelCollisionHandoffQueue::process(int64_t p_physics_frame) {
         }
         Object *source = ObjectDB::get_instance(ticket.source_body_id);
         Object *shape = ObjectDB::get_instance(ticket.source_shape_id);
+        if (ticket.fragment_released) {
+            if (!source_rebuild_pending(source, shape, ticket.source_revision)) {
+                tickets.erase(tickets.begin() + index);
+            }
+            continue;
+        }
         const bool source_pending =
-                source_revision_pending(source, shape, ticket.source_revision);
+                source_handoff_pending(source, shape, ticket.source_revision);
         bool absorbed_pending = false;
         for (const uint64_t absorbed_id : ticket.absorbed_ids) {
             Node *absorbed = Object::cast_to<Node>(ObjectDB::get_instance(absorbed_id));
@@ -161,7 +186,10 @@ Array VoxelCollisionHandoffQueue::process(int64_t p_physics_frame) {
         if (shape != nullptr) {
             cleanup_shapes.append(shape);
         }
-        tickets.erase(tickets.begin() + index);
+        ticket.fragment_released = true;
+        if (!source_rebuild_pending(source, shape, ticket.source_revision)) {
+            tickets.erase(tickets.begin() + index);
+        }
     }
     return cleanup_shapes;
 }

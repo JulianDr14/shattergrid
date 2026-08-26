@@ -30,6 +30,9 @@ var _physics_bridge := VoxelRopePhysicsBridge.new()
 var _solver_configured := false
 var _mesh := ArrayMesh.new()
 var pulling := 0
+var last_physics_ms := 0.0
+var last_raycasts := 0
+var last_collision_hits := 0
 
 
 func _ready() -> void:
@@ -114,6 +117,9 @@ func setup(world: VoxelWorld3D) -> void:
 
 
 func _physics_process(delta: float) -> void:
+	var started := Time.get_ticks_usec()
+	last_raycasts = 0
+	last_collision_hits = 0
 	_follow_anchors()
 	if _solver.get_awake_count() > 0:
 		_solver.simulate(delta)
@@ -124,8 +130,11 @@ func _physics_process(delta: float) -> void:
 		for span_index: int in result.break_indices:
 			_break_span(span_index)
 		pulling = int(result.pulling)
+		last_raycasts = int(result.raycasts)
+		last_collision_hits = int(result.hits)
 	if _solver.consume_mesh_dirty():
 		_rebuild()
+	last_physics_ms = (Time.get_ticks_usec() - started) / 1000.0
 
 
 func _on_body_split(source: VoxelBody3D, created: Array[VoxelBody3D]) -> void:
@@ -327,6 +336,9 @@ func get_diagnostics() -> Dictionary:
 		"loose_awake": loose_awake,
 		"external_awake": external_awake,
 		"pulling": pulling,
+		"physics_ms": snappedf(last_physics_ms, 0.001),
+		"raycasts": last_raycasts,
+		"collision_hits": last_collision_hits,
 	}
 
 

@@ -18,13 +18,15 @@ void VoxelTransformTracker::_bind_methods() {
 
 void VoxelTransformTracker::reset() {
     previous_awake.clear();
+    grace_awake.clear();
 }
 
 Dictionary VoxelTransformTracker::collect(const PackedInt64Array &p_awake_body_ids) {
     std::unordered_set<uint64_t> current;
     current.reserve(static_cast<size_t>(p_awake_body_ids.size()));
     std::vector<uint64_t> candidates;
-    candidates.reserve(static_cast<size_t>(p_awake_body_ids.size()) + previous_awake.size());
+    candidates.reserve(static_cast<size_t>(p_awake_body_ids.size())
+            + previous_awake.size() + grace_awake.size());
     for (int index = 0; index < p_awake_body_ids.size(); ++index) {
         const uint64_t id = static_cast<uint64_t>(p_awake_body_ids[index]);
         if (current.insert(id).second) {
@@ -33,6 +35,11 @@ Dictionary VoxelTransformTracker::collect(const PackedInt64Array &p_awake_body_i
     }
     for (const uint64_t id : previous_awake) {
         if (current.count(id) == 0) {
+            candidates.push_back(id);
+        }
+    }
+    for (const uint64_t id : grace_awake) {
+        if (current.count(id) == 0 && previous_awake.count(id) == 0) {
             candidates.push_back(id);
         }
     }
@@ -56,12 +63,25 @@ Dictionary VoxelTransformTracker::collect(const PackedInt64Array &p_awake_body_i
                 continue;
             }
             shapes.append(shape);
-            transforms.append(shape->get_global_transform_interpolated());
+            // Mientras se mueve se usa la muestra interpolada. En el frame de gracia posterior al
+            // sueño se sella la pose canónica: la interpolación puede conservar para siempre la
+            // muestra anterior si el Body se durmió o fue reparentado entre ticks.
+            transforms.append(current.count(body_id) != 0
+                    ? shape->get_global_transform_interpolated()
+                    : shape->get_global_transform());
             bounds.append(shape->has_method("world_bounds")
                     ? static_cast<AABB>(shape->call("world_bounds")) : AABB());
             body_ids.append(static_cast<int64_t>(body_id));
         }
     }
+    std::unordered_set<uint64_t> next_grace;
+    next_grace.reserve(previous_awake.size());
+    for (const uint64_t id : previous_awake) {
+        if (current.count(id) == 0) {
+            next_grace.insert(id);
+        }
+    }
+    grace_awake = std::move(next_grace);
     previous_awake = std::move(current);
 
     Dictionary result;

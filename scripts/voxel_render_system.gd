@@ -238,14 +238,17 @@ func _process(delta: float) -> void:
 			last_metadata_fallback_reason = "moving_shape_without_entry:%s" % shape.name
 			# A shape without atlas/entry metadata cannot be made visible by rebuilding every frame.
 			# Leave it out and let registration/capacity handling resolve it explicitly.
+	_cleanup_elapsed += delta
+	var run_cleanup := _cleanup_elapsed >= 1.0
+	if run_cleanup:
+		_cleanup_elapsed = 0.0
+		_append_settled_pose_repairs(transform_updates)
 	if not transform_updates.is_empty() and not _metadata_dirty:
 		var transform_started := Time.get_ticks_usec()
 		if not effect.update_entry_transforms(transform_updates):
 			last_metadata_fallback_reason = "effect_rejected_transform_batch"
 		last_transform_sync_ms = (Time.get_ticks_usec() - transform_started) / 1000.0
-	_cleanup_elapsed += delta
-	if _cleanup_elapsed >= 1.0:
-		_cleanup_elapsed = 0.0
+	if run_cleanup:
 		var live: Array[VoxelShape3D] = []
 		var live_keys := {}
 		for shape in _shapes:
@@ -271,15 +274,54 @@ func _process(delta: float) -> void:
 		_entry_capacity_dirty = false
 
 
+## Joints y controladores authored pueden recolocar un Body después de que Jolt ya lo marcó como
+## dormido, sin emitir otra transición awake. Una reconciliación canónica a 1 Hz cubre ese caso sin
+## volver a recorrer 648 props en cada frame; solo genera uploads para las poses que de verdad
+## difieren de lo ya enviado.
+func _append_settled_pose_repairs(updates: Array[Dictionary]) -> void:
+	if world == null:
+		return
+	for body in world.get_dynamic_bodies():
+		if not is_instance_valid(body) or body.state != VoxelBody3D.State.DYNAMIC \
+				or body.is_awake() \
+				or world.is_body_externally_transform_tracked(body.get_instance_id()):
+			continue
+		for shape in body.get_shapes():
+			if not is_instance_valid(shape) or shape.voxel_count() <= 0:
+				continue
+			var key := shape.get_instance_id()
+			var canonical := shape.global_transform
+			if _transforms.has(key) and _transform_close(
+				_transforms[key] as Transform3D, canonical, 0.02, 0.01
+			):
+				continue
+			_transforms[key] = canonical
+			if not _entry_indices.has(key) and shape.renderer_slot >= 0:
+				_entry_indices[key] = shape.renderer_slot
+			if not _entry_indices.has(key):
+				_activate_reserved_entry(shape)
+			if _entry_indices.has(key) and not _metadata_dirty:
+				updates.append({
+					"index": int(_entry_indices[key]), "transform": canonical,
+				})
+			else:
+				last_metadata_fallback_reason = "settled_shape_without_entry:%s" % shape.name
+
+
 ## Censo CPU de los cuatro registros que deben describir exactamente las mismas Shapes. Sirve para
 ## convertir un posible fallo visual futuro en una causa concreta y también para pruebas de estrés.
 func get_coherence_snapshot() -> Dictionary:
 	var effect_entry_count := effect.get_entry_count() if effect != null else 0
+	var pending_gpu_updates := effect.get_pending_gpu_update_count() if effect != null else 0
+	var pending_gpu_update_age_ms := effect.get_pending_gpu_update_age_ms() \
+		if effect != null else 0.0
 	var live_keys := {}
 	var missing_slots: Array[String] = []
 	var missing_entries: Array[String] = []
 	var invalid_entries: Array[String] = []
 	var stale_renderer_slots: Array[String] = []
+	var effect_pose_mismatches: Array[String] = []
+	var settled_pose_mismatches: Array[String] = []
 	for shape in _shapes:
 		if not is_instance_valid(shape) or not shape.is_inside_tree() or shape.voxel_count() <= 0:
 			continue
@@ -295,24 +337,89 @@ func get_coherence_snapshot() -> Dictionary:
 			invalid_entries.append(shape.name)
 		if shape.renderer_slot != entry_index:
 			stale_renderer_slots.append(shape.name)
+		var scheduled: Transform3D = _transforms.get(key, shape.global_transform)
+		if effect != null and entry_index >= 0 and entry_index < effect_entry_count \
+				and not _transform_close(
+					scheduled, effect.get_entry_transform(entry_index), 0.001, 0.001
+				):
+			effect_pose_mismatches.append(shape.name)
+		var owner := _body_of_shape(shape)
+		# Un cuerpo despierto puede avanzar entre el tick físico y este censo. Al dormir ya no existe
+		# esa ambigüedad: si la pose final de escena y la subida difieren, queda un fantasma visible.
+		if owner != null and owner.state == VoxelBody3D.State.DYNAMIC and not owner.is_awake() \
+				and (world == null or not world.is_body_externally_transform_tracked(
+					owner.get_instance_id()
+				)) \
+				and not _transform_close(scheduled, shape.global_transform, 0.02, 0.01):
+			settled_pose_mismatches.append(shape.name)
 	var orphan_slots := 0
 	for key in _slots:
 		if not live_keys.has(key):
 			orphan_slots += 1
+	var status := "COHERENT"
+	if not missing_slots.is_empty() or not missing_entries.is_empty() \
+			or not invalid_entries.is_empty() or not stale_renderer_slots.is_empty() \
+			or not effect_pose_mismatches.is_empty() or not settled_pose_mismatches.is_empty() \
+			or orphan_slots > 0:
+		status = "DESYNC"
+	elif _metadata_dirty or pending_gpu_update_age_ms > 50.0:
+		status = "PENDING"
 	return {
+		"status": status,
 		"live_shapes": live_keys.size(),
 		"atlas_slots": _slots.size(),
 		"renderer_entries": _entry_indices.size(),
 		"free_entries": _free_entry_indices.size(),
 		"gpu_entry_records": effect_entry_count,
+		"pending_gpu_updates": pending_gpu_updates,
+		"pending_gpu_update_age_ms": snappedf(pending_gpu_update_age_ms, 0.001),
 		"missing_slots": missing_slots,
 		"missing_entries": missing_entries,
 		"invalid_entries": invalid_entries,
 		"stale_renderer_slots": stale_renderer_slots,
+		"effect_pose_mismatches": effect_pose_mismatches,
+		"settled_pose_mismatches": settled_pose_mismatches,
 		"orphan_slots": orphan_slots,
 		"metadata_rebuild_pending": _metadata_dirty,
 		"entry_capacity_rebuilds": entry_capacity_rebuilds,
 	}
+
+
+## Foto puntual para regresiones de movimiento. `scheduled` es lo que el sistema cree haber subido
+## y `effect` es el registro exacto que el compositor empaquetó para la hoja correspondiente.
+func get_shape_pose_snapshot(shape: VoxelShape3D) -> Dictionary:
+	if shape == null or not is_instance_valid(shape):
+		return {"valid": false}
+	var key := shape.get_instance_id()
+	var entry_index := int(_entry_indices.get(key, -1))
+	var scene_pose := shape.get_global_transform_interpolated()
+	var scheduled: Transform3D = _transforms.get(key, Transform3D.IDENTITY)
+	var effect_pose := effect.get_entry_transform(entry_index) \
+		if effect != null and entry_index >= 0 else Transform3D.IDENTITY
+	var pending_gpu_updates := effect.get_pending_gpu_update_count() if effect != null else 0
+	var pending_gpu_update_age_ms := effect.get_pending_gpu_update_age_ms() \
+		if effect != null else 0.0
+	return {
+		"valid": _transforms.has(key) and entry_index >= 0,
+		"entry": entry_index,
+		"scene": scene_pose,
+		"scheduled": scheduled,
+		"effect": effect_pose,
+		"scene_error_m": scene_pose.origin.distance_to(scheduled.origin),
+		"canonical_error_m": shape.global_transform.origin.distance_to(scheduled.origin),
+		"effect_error_m": scheduled.origin.distance_to(effect_pose.origin),
+		"pending_gpu_updates": pending_gpu_updates,
+		"pending_gpu_update_age_ms": pending_gpu_update_age_ms,
+	}
+
+
+static func _body_of_shape(shape: VoxelShape3D) -> VoxelBody3D:
+	var node: Node = shape.get_parent()
+	while node != null:
+		if node is VoxelBody3D:
+			return node as VoxelBody3D
+		node = node.get_parent()
+	return null
 
 
 func _rebuild_atlases() -> bool:
@@ -786,6 +893,15 @@ func _shape_has_glass(shape: VoxelShape3D) -> bool:
 
 static func _transform_equal(a: Transform3D, b: Transform3D) -> bool:
 	return a.origin.is_equal_approx(b.origin) and a.basis.is_equal_approx(b.basis)
+
+
+static func _transform_close(
+	a: Transform3D, b: Transform3D, position_epsilon: float, basis_epsilon: float
+) -> bool:
+	return a.origin.distance_to(b.origin) <= position_epsilon \
+		and a.basis.x.distance_to(b.basis.x) <= basis_epsilon \
+		and a.basis.y.distance_to(b.basis.y) <= basis_epsilon \
+		and a.basis.z.distance_to(b.basis.z) <= basis_epsilon
 
 
 static func _next_power_of_two(value: int) -> int:

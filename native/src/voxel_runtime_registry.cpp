@@ -59,6 +59,7 @@ void VoxelRuntimeRegistry::clear() {
     bodies.clear();
     shapes.clear();
     baked_collision_pending.clear();
+    shapes_by_body.clear();
     dynamic_bodies = 0;
     awake_bodies = 0;
     compound_boxes = 0;
@@ -91,6 +92,15 @@ void VoxelRuntimeRegistry::remove_body(int64_t p_body_id) {
     }
     remove_body_totals(existing->second);
     bodies.erase(existing);
+    const auto owned = shapes_by_body.find(p_body_id);
+    if (owned == shapes_by_body.end()) {
+        return;
+    }
+    for (const int64_t shape_id : owned->second) {
+        shapes.erase(shape_id);
+        baked_collision_pending.erase(shape_id);
+    }
+    shapes_by_body.erase(owned);
 }
 
 void VoxelRuntimeRegistry::upsert_shape(int64_t p_shape_id, const Ref<VoxelShapeData> &p_data,
@@ -107,11 +117,32 @@ void VoxelRuntimeRegistry::upsert_shape(int64_t p_shape_id, const Ref<VoxelShape
     record.collision_enabled = p_collision_enabled;
     record.collision_rebuild_pending = p_collision_rebuild_pending;
     record.collision_handoff_pending = p_collision_handoff_pending;
+    const auto previous = shapes.find(p_shape_id);
+    if (previous != shapes.end() && previous->second.body_id != p_body_id) {
+        const auto owner = shapes_by_body.find(previous->second.body_id);
+        if (owner != shapes_by_body.end()) {
+            owner->second.erase(p_shape_id);
+            if (owner->second.empty()) {
+                shapes_by_body.erase(owner);
+            }
+        }
+    }
+    shapes_by_body[p_body_id].insert(p_shape_id);
     shapes[p_shape_id] = record;
 }
 
 void VoxelRuntimeRegistry::remove_shape(int64_t p_shape_id) {
-    shapes.erase(p_shape_id);
+    const auto existing = shapes.find(p_shape_id);
+    if (existing != shapes.end()) {
+        const auto owner = shapes_by_body.find(existing->second.body_id);
+        if (owner != shapes_by_body.end()) {
+            owner->second.erase(p_shape_id);
+            if (owner->second.empty()) {
+                shapes_by_body.erase(owner);
+            }
+        }
+        shapes.erase(existing);
+    }
     baked_collision_pending.erase(p_shape_id);
 }
 

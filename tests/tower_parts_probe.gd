@@ -34,8 +34,19 @@ func _run() -> void:
 	var world := VoxelWorld3D.new()
 	world.show_diagnostics = false
 	world.physics_budget = VoxelPhysicsBudget.new()
+	world.renderer_settings = VoxelRendererSettings.new()
+	world.renderer_settings.sun_shadows_enabled = false
 	root.add_child(world)
 	TeardownMapImporter.import_map(world, MAP, Vector3.INF, 1.0e9, Vector3.ZERO, true)
+	var renderer: VoxelRenderSystem
+	if "--renderer" in OS.get_cmdline_user_args():
+		_check(RenderingServer.get_rendering_device() != null,
+			"la prueba visual dispone de RenderingDevice")
+		var camera := Camera3D.new()
+		root.add_child(camera)
+		renderer = VoxelRenderSystem.new()
+		root.add_child(renderer)
+		_check(renderer.setup(world, camera), "el renderer carga el mapa completo")
 	for _frame in 10:
 		await physics_frame
 
@@ -58,7 +69,11 @@ func _run() -> void:
 	for _frame in 30:
 		await physics_frame
 	var mast_after := _bodies_near(world, Vector3(-3.9, 14.7, 70.9), 3.0)
-	var mast_body: VoxelBody3D = mast_after[0] if not mast_after.is_empty() else null
+	var mast_body: VoxelBody3D
+	for candidate in mast_after:
+		if candidate.state == VoxelBody3D.State.DYNAMIC:
+			mast_body = candidate
+			break
 	var head_body := world._body_of(head_shape)
 	var head_rigid := head_body.get_physics_body() as RigidBody3D if head_body != null else null
 	print("  despues: mastil estado=%d  cabeza estado=%d  mismo cuerpo=%s" % [
@@ -103,18 +118,40 @@ func _run() -> void:
 		"la cabeza y el tramo que la sostenía conservan un único Body")
 	_check(not head_body.collision_handoff_pending,
 		"el handoff no queda abandonado")
-	_check(head_rigid != null and not head_rigid.continuous_cd,
-		"la torre grande y lenta no barre 29 cajas con CCD permanentemente")
+	_check(head_rigid != null and (
+			not head_rigid.continuous_cd
+			or head_body.compound_boxes <= VoxelBody3D.LARGE_BODY_CCD_BOX_THRESHOLD
+		), "CCD solo permanece activo si el compound quedó por debajo del umbral adaptativo")
 	_check(tower_mass > 500.0 and tower_mass < 20_000.0,
 		"el remanente de torre queda por debajo de 20 t, no supera 100 t como bloque macizo")
 	_check(head_body.compound_boxes <= world.physics_budget.max_boxes_per_body,
 		"la colisión móvil queda dentro del presupuesto por Body")
+	var transform_sync_ms := PackedFloat64Array()
 	for _frame in 90:
 		await physics_frame
+		if renderer != null:
+			transform_sync_ms.append(renderer.last_transform_sync_ms)
 	var head_drop := head_y - head_shape.world_bounds().get_center().y
+	if renderer != null and is_instance_valid(head_shape):
+		renderer._process(0.0)
+		var pose := renderer.get_shape_pose_snapshot(head_shape)
+		var render_audit := renderer.get_coherence_snapshot()
+		print("  render pose scene=%.4f m effect=%.4f m sync P95=%.3f ms audit=%s" % [
+			float(pose.get("scene_error_m", INF)), float(pose.get("effect_error_m", INF)),
+			_percentile(transform_sync_ms, 0.95), JSON.stringify(render_audit),
+		])
+		_check(bool(pose.get("valid", false)) and float(pose.scene_error_m) < 0.02,
+			"la pose renderizada de la torre sigue a Jolt")
+		_check(float(pose.get("effect_error_m", INF)) < 0.001,
+			"la hoja GPU no conserva una copia de pie")
+		_check(String(render_audit.get("status", "DESYNC")) == "COHERENT" \
+			and float(render_audit.get("pending_gpu_update_age_ms", INF)) < 50.0,
+			"atlas, entradas, poses y cola Vulkan del mapa completo permanecen coherentes")
 	var recovery_physics_ms := PackedFloat64Array()
 	for _frame in 60:
 		await physics_frame
+		if renderer != null:
+			transform_sync_ms.append(renderer.last_transform_sync_ms)
 		recovery_physics_ms.append(
 			Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0
 		)

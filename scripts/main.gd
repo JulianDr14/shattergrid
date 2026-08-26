@@ -80,6 +80,8 @@ var _destruction_metadata_sync_times := PackedFloat64Array()
 var _destruction_collision_flush_times := PackedFloat64Array()
 var _shadow_probe_elapsed := 0.0
 var _hud_elapsed := 0.0
+var _render_audit_elapsed := 0.0
+var _cached_render_audit := {}
 var _voxel_recount_elapsed := 0.0
 var _cached_voxel_total := 0
 
@@ -525,6 +527,19 @@ func _refresh() -> void:
 		_ropes_awake(),
 		_ropes_pulling(),
 	]
+	if _voxel_renderer != null:
+		# El censo recorre las 2.321 entradas de Lee y consulta sus poses. Se conserva a 1 Hz; el HUD
+		# se repinta a 4 Hz, pero repetir el mismo diagnóstico cuatro veces solo fabrica picos de CPU.
+		if _cached_render_audit.is_empty():
+			_cached_render_audit = _voxel_renderer.get_coherence_snapshot()
+		var render_audit := _cached_render_audit
+		_counter.text += "\nrender %s · Shapes %d/%d · poses %d/%d" % [
+			String(render_audit.get("status", "DESYNC")),
+			int(render_audit.get("renderer_entries", 0)),
+			int(render_audit.get("live_shapes", 0)),
+			(render_audit.get("effect_pose_mismatches", []) as Array).size(),
+			(render_audit.get("settled_pose_mismatches", []) as Array).size(),
+		]
 	if "--physics-probe" in OS.get_cmdline_user_args():
 		_counter.text += "\n" + _probe_under_crosshair()
 
@@ -641,6 +656,10 @@ func _process(delta: float) -> void:
 			_ropes_pulling(), _ropes_awake(),
 		])
 	_hud_elapsed += delta
+	_render_audit_elapsed += delta
+	if _voxel_renderer != null and _render_audit_elapsed >= 1.0:
+		_render_audit_elapsed = 0.0
+		_cached_render_audit = _voxel_renderer.get_coherence_snapshot()
 	if _hud_elapsed >= 0.25:
 		_hud_elapsed = 0.0
 		_refresh()

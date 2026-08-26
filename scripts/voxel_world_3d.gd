@@ -46,6 +46,10 @@ var damage_detach_ms := 0.0
 var damage_body_ms := 0.0
 var damage_fragments := 0
 var _damage_grounded_by_shape := {}
+## Pares Shape->vecino cuyo contacto material atravesaba el cráter antes del daño actual. Solo esos
+## enlaces se revalidan con tolerancia estricta; los contactos authored alejados conservan la
+## holgura del mapa y no se rompen porque otra zona de la misma Shape recibió un impacto.
+var _damage_cut_contact_pairs := {}
 ## Cuántos cuerpos rígidos se crean como mucho en un frame. Dos conserva respuesta inmediata y
 ## reparte el tercero: junto al compound de 64 cajas bajó el frame P95 de destrucción de 41,03 a
 ## 35,69 ms y la ventana de impacto de 45,58 a 41,27 ms en Lee.
@@ -110,6 +114,7 @@ const BAKED_COLLISION_FRAME_BUDGET_USEC := 1500
 ## Una pieza congelada es peor que un pequeño burst de cocción: se dedica un presupuesto temporal
 ## mayor únicamente a retirar los shards antiguos que bloquean handoffs activos.
 const COLLISION_HANDOFF_BUDGET_USEC := 5000
+const COLLISION_REBUILD_BUDGET_USEC := 1500
 const BAKED_COLLISION_PRIORITY_INTERVAL := 0.5
 const PHYSICS_IMPACT_MIN_ENERGY := 180.0
 const PHYSICS_IMPACTS_PER_FRAME := 2
@@ -261,7 +266,6 @@ func unregister_body(body: VoxelBody3D) -> void:
 		_cancel_baked_collision(shape)
 		_unregister_shape_spatial(shape)
 		_runtime_registry.remove_shape(shape.get_instance_id())
-		_foundation_cache.erase(shape.get_instance_id())
 		_weld_baseline.erase(shape.get_instance_id())
 		_desync_recovery_queued.erase(shape.get_instance_id())
 	for index in range(_pending_fragments.size() - 1, -1, -1):
@@ -323,6 +327,10 @@ func track_external_body_transforms(body: VoxelBody3D) -> void:
 func untrack_external_body_transforms(body: VoxelBody3D) -> void:
 	if body != null:
 		_externally_transformed_body_ids.erase(body.get_instance_id())
+
+
+func is_body_externally_transform_tracked(body_id: int) -> bool:
+	return _externally_transformed_body_ids.has(body_id)
 
 
 func queue_collision_rebuild(body: VoxelBody3D) -> void:
@@ -406,7 +414,7 @@ func prime_baked_static_collision(center: Vector3, radius: float) -> Dictionary:
 ## Completes the immutable part of the broad phase while the map is still loading. Otherwise the
 ## first shot has to sort every static Shape before it can even discover what was hit.
 func finalize_spatial_index() -> void:
-	# La indexación toca `_static_grid` y `_foundation_cache`: se queda en el hilo principal. El
+	# La indexación toca `_static_grid`: se queda en el hilo principal. El
 	# índice de conectividad, en cambio, solo escribe dentro de su propia VoxelShapeData, así que se
 	# reparte entre los núcleos. Era el 41 % de la carga del mapa medido en serie (8,5 s de 20,6 s).
 	var pending := {}
@@ -441,14 +449,7 @@ func _index_static_shape(shape: VoxelShape3D) -> void:
 	_static_grid.insert(shape, shape.world_bounds())
 	# El conteo lineal se paga una sola vez al registrar/importar la Shape, nunca en el frame del
 	# primer disparo. Después el corte nativo descuenta exactamente las raíces que elimina.
-	var key := shape.get_instance_id()
-	if not _foundation_cache.has(key):
-		var count := 0
-		if shape.palette != null:
-			count = shape.data.count_hardness_at_least(
-				shape.palette.get_hardnesses(), FOUNDATION_HARDNESS
-			)
-		_foundation_cache[key] = count
+	shape.foundation_voxel_count(FOUNDATION_HARDNESS)
 
 
 ## Applies material-aware damage and returns one record per affected Shape.
@@ -482,6 +483,7 @@ func damage_sphere(
 	damage_body_ms = 0.0
 	damage_fragments = 0
 	_damage_grounded_by_shape.clear()
+	_damage_cut_contact_pairs.clear()
 	damage_connectivity_guard_ms = 0.0
 	connectivity_skipped = 0
 	damage_impulse_ms = 0.0
@@ -531,6 +533,7 @@ func damage_sphere(
 			continue
 		for old_neighbour in _local_static_contacts(candidate, center, radius):
 			support_seed_map[old_neighbour.get_instance_id()] = old_neighbour
+			_damage_cut_contact_pairs[_contact_pair_key(candidate, old_neighbour)] = true
 	damage_support_seed_ms = (Time.get_ticks_usec() - seed_started) / 1000.0
 	for shape in damage_shapes:
 		var body := _body_of(shape)
@@ -542,11 +545,6 @@ func damage_sphere(
 		var damage: Dictionary = shape.damage_sphere(
 			center, radius, energy, FOUNDATION_HARDNESS
 		)
-		var removed_foundation := int(damage.get("removed_foundation", 0))
-		if removed_foundation > 0:
-			var foundation_key := shape.get_instance_id()
-			var live_foundations := int(_foundation_cache.get(foundation_key, 0))
-			_foundation_cache[foundation_key] = maxi(0, live_foundations - removed_foundation)
 		damage_native_ms += shape.last_damage_native_ms
 		damage_notify_ms += shape.last_damage_notify_ms
 		if int(damage.get("removed", 0)) <= 0:
@@ -603,7 +601,9 @@ func damage_sphere(
 		# Una continuación que toca el cuarto fragmento todavía parece una cadena estática sin raíz.
 		# Soltarla aquí la convierte en otro RigidBody antes de que el fragmento diferido pueda reclamarla.
 		for support_shape in support_seeds:
-			_pending_support_checks[support_shape.get_instance_id()] = support_shape
+			_pending_support_checks[support_shape.get_instance_id()] = {
+				"shape": support_shape, "epoch": _active_damage_epoch,
+			}
 	var impulse_started := Time.get_ticks_usec()
 	var impulse_bodies := {}
 	# El radio de impulso es mayor que el de corte, pero sigue siendo local. Recorrer todos los
@@ -855,12 +855,18 @@ func get_metrics() -> Dictionary:
 ## de caja sin ser terreno, con AABB cubicas de 44 y 51 m de lado. Medido. El terreno no necesita esa
 ## regla porque ya es roca: 516 Shapes del mapa la cumplen por material.
 const FOUNDATION_HARDNESS := 1000.0
-## Margen de contacto. Dos Shapes cuentan como unidas si sus voxeles vivos se tocan a esta distancia.
+## Holgura de autor entre Shapes distintas. Lee coloca algunas piezas que forman un único objeto
+## (por ejemplo el mástil y la cabeza de la torre eléctrica) con hasta 12 cm entre sus rejillas.
+## Reducir este margen global separa el objeto antes de tiempo y deja su handoff esperando dos
+## cuerpos que deberían caer como uno.
 const CONTACT_MARGIN := 0.12
+## Un componente recién clasificado dentro de una Shape ya no tiene holgura de autor: sus voxeles
+## vienen de la misma rejilla exacta. Usar aquí los 12 cm globales puentea una celda recién borrada y
+## hace que una reja siga "tocando" el pilar después de volar su unión.
+const COMPONENT_CONTACT_MARGIN := 0.09
 
 var _static_grid := VoxelShapeGrid.new()
 ## Shape id -> cantidad exacta de voxeles de raíz todavía vivos.
-var _foundation_cache := {}
 ## Contactos ya calculados, por id de Shape. Entre dos Shapes estaticas el contacto no cambia si no
 ## se rompe una de las dos, y en una partida se dispara muchas veces en la misma esquina.
 var _contact_cache := {}
@@ -879,17 +885,9 @@ var support_foundation_ms := 0.0
 ## `true` si la Shape todavía contiene material de cimiento vivo. El tamaño, la AABB y el contacto
 ## de colisión no convierten una pieza en raíz.
 func _is_foundation(shape: VoxelShape3D) -> bool:
-	var key := shape.get_instance_id()
-	if _foundation_cache.has(key):
-		return int(_foundation_cache[key]) > 0
 	var started := Time.get_ticks_usec()
 	support_foundation_tests += 1
-	var result := 0
-	if shape.palette != null and shape.data != null:
-		result = shape.data.count_hardness_at_least(
-			shape.palette.get_hardnesses(), FOUNDATION_HARDNESS
-		)
-	_foundation_cache[key] = result
+	var result := shape.foundation_voxel_count(FOUNDATION_HARDNESS)
 	support_foundation_ms += (Time.get_ticks_usec() - started) / 1000.0
 	return result > 0
 
@@ -907,7 +905,13 @@ func _is_foundation(shape: VoxelShape3D) -> bool:
 ## Solo corre sobre el cuerpo que acaba de recibir daño y sobre sus propias Shapes, que son unas
 ## pocas, asi que no aparece en el perfil.
 func _split_loose_shapes(body: VoxelBody3D) -> Array[VoxelBody3D]:
-	if body.state != VoxelBody3D.State.DYNAMIC or body.is_physics_persistent():
+	# Un joint NO es motivo para no partir. `is_physics_persistent()` cuenta las retenciones de
+	# constraint, y en Lee 20 de los 40 cuerpos dinamicos multi-Shape tienen una: eran exactamente los
+	# que se quedaban con medio poste flotando, soldado por el RigidBody a la mitad que el joint
+	# sujeta. Lo que si hay que respetar es un vehiculo -sus Shapes son un chasis- y un handoff a
+	# medias, que todavia no tiene colision con la que decidir nada.
+	if body.state != VoxelBody3D.State.DYNAMIC or body.physics_persistent \
+			or body.collision_handoff_pending or body.get_physics_body() is VoxelVehicle3D:
 		return []
 	var shapes: Array[VoxelShape3D] = []
 	for shape in body.get_shapes():
@@ -1001,18 +1005,23 @@ func _shapes_touch_with_margin(a: VoxelShape3D, b: VoxelShape3D, margin: float) 
 func _coalesce_ready_structural_bodies() -> void:
 	for epoch_variant: Variant in _pending_structural_coalesce.keys():
 		var epoch := int(epoch_variant)
+		var fragments_pending := false
+		for pending_fragment: Dictionary in _pending_fragments:
+			if int(pending_fragment.get("damage_epoch", -1)) == epoch:
+				fragments_pending = true
+				break
+		if fragments_pending:
+			continue
 		var candidates: Array[VoxelBody3D] = []
-		var pending := false
 		for body in _dynamic_bodies:
 			if not is_instance_valid(body) or body.state != VoxelBody3D.State.DYNAMIC \
 					or not body.structural or int(body.get_meta("damage_epoch", -1)) != epoch \
 					or body.get_total_voxels() == 0:
 				continue
 			candidates.append(body)
-			pending = pending or body.collision_handoff_pending \
-				or body.has_pending_collision_rebuild()
-		if pending:
-			continue
+		# Se agrupa antes de liberar los handoffs. Todos los compounds ya existen y el host se vuelve a
+		# cocinar una vez al absorber; esperar a que cada Body reciba su impulso los separa físicamente
+		# durante el mismo frame y hace imposible reconocer después que eran una sola torre.
 		var unassigned := candidates.duplicate()
 		while not unassigned.is_empty():
 			var group: Array[VoxelBody3D] = [unassigned.pop_back()]
@@ -1095,10 +1104,13 @@ func _static_contacts(shape: VoxelShape3D) -> Array[VoxelShape3D]:
 		var to := candidate if self_smaller else shape
 		# other -> self, igual que en `_shapes_touch`: al reves el contacto falla a distancia.
 		var relative := from.global_transform.affine_inverse() * to.global_transform
+		var contact_margin := COMPONENT_CONTACT_MARGIN \
+			if _damage_cut_contact_pairs.has(_contact_pair_key(shape, candidate)) \
+			else CONTACT_MARGIN
 		support_touch_calls += 1
 		var touch_started := Time.get_ticks_usec()
 		var hit: bool = from.data.touches(
-			to.data, relative, from.voxel_size, to.voxel_size, CONTACT_MARGIN, 0
+			to.data, relative, from.voxel_size, to.voxel_size, contact_margin, 0
 		)
 		support_touch_ms += (Time.get_ticks_usec() - touch_started) / 1000.0
 		if hit:
@@ -1242,8 +1254,11 @@ func _touches_foundation_directly(shape: VoxelShape3D, excluded: VoxelShape3D) -
 				or not _is_foundation(candidate):
 			continue
 		var body := _body_of(candidate)
+		var contact_margin := COMPONENT_CONTACT_MARGIN \
+			if _damage_cut_contact_pairs.has(_contact_pair_key(shape, candidate)) \
+			else CONTACT_MARGIN
 		if body != null and body.state == VoxelBody3D.State.STATIC \
-				and _shapes_touch(shape, candidate):
+				and _shapes_touch_with_margin(shape, candidate, contact_margin):
 			damage_support_contacts_ms += (Time.get_ticks_usec() - started) / 1000.0
 			return true
 	damage_support_contacts_ms += (Time.get_ticks_usec() - started) / 1000.0
@@ -1275,17 +1290,22 @@ func _component_reaches_external_foundation(
 		damage_component_contact_calls += 1
 		var existing_indices: PackedInt32Array = component.get("indices", PackedInt32Array())
 		var seed_index := int(component.get("seed_index", -1))
+		# Si el enlace atravesaba justo la zona borrada, no puede sobrevivir gracias a la holgura de
+		# importación. Los enlaces alejados son authored y conservan los 12 cm originales.
+		var contact_margin := COMPONENT_CONTACT_MARGIN \
+			if _damage_cut_contact_pairs.has(_contact_pair_key(shape, neighbour)) \
+			else CONTACT_MARGIN
 		var touches: bool
 		if existing_indices.is_empty() and seed_index >= 0:
 			touches = shape.data.component_seed_touches(
 				seed_index, neighbour.data, relative, shape.voxel_size,
-				neighbour.voxel_size, CONTACT_MARGIN
+				neighbour.voxel_size, contact_margin
 			)
 		else:
 			_ensure_component_indices(shape, component)
 			touches = shape.data.component_touches(
 				component.indices, neighbour.data, relative, shape.voxel_size,
-				neighbour.voxel_size, CONTACT_MARGIN
+				neighbour.voxel_size, contact_margin
 			)
 		contacts_usec += Time.get_ticks_usec() - touch_started
 		if not touches:
@@ -1315,6 +1335,10 @@ func _component_reaches_external_foundation(
 			return true
 	damage_support_contacts_ms += contacts_usec / 1000.0
 	return false
+
+
+static func _contact_pair_key(a: VoxelShape3D, b: VoxelShape3D) -> String:
+	return "%d:%d" % [a.get_instance_id(), b.get_instance_id()]
 
 
 func _drop_unsupported(shapes: Array[VoxelShape3D]) -> Array[VoxelBody3D]:
@@ -1595,18 +1619,19 @@ func _split_disconnected(
 	)
 	connectivity_fallbacks += int(connectivity_metrics.get("fallbacks", 0))
 	damage_component_fill_ms += (Time.get_ticks_usec() - fill_started) / 1000.0
-	var damage_voxel := shape.world_to_voxel(impulse_center)
-	var local_reach := blast_radius / shape.voxel_size + 2.0
 	if components.size() == 1 and not _has_structural_support(components[0]):
-		var route_started := Time.get_ticks_usec()
-		if bool(_reaches_foundation(shape).grounded):
+		var external_started := Time.get_ticks_usec()
+		if _component_reaches_external_foundation(
+			shape, components[0] as Dictionary, _damage_grounded_by_shape
+		):
 			(components[0] as Dictionary)["anchored"] = true
-		damage_support_routes_ms += (Time.get_ticks_usec() - route_started) / 1000.0
+		damage_external_support_ms += (
+			Time.get_ticks_usec() - external_started
+		) / 1000.0
 	elif components.size() > 1:
 		var grounded_by_shape := _damage_grounded_by_shape
 		for component: Dictionary in components:
-			if _has_structural_support(component) \
-					or not _component_near_voxel(component, damage_voxel, local_reach):
+			if _has_structural_support(component):
 				continue
 			var external_started := Time.get_ticks_usec()
 			if _component_reaches_external_foundation(shape, component, grounded_by_shape):
@@ -1631,8 +1656,7 @@ func _split_disconnected(
 
 	var created: Array[VoxelBody3D] = []
 	var component_plan := _damage_planner.plan_detached_components(
-		components, shape.anchored, _body.state == VoxelBody3D.State.DYNAMIC,
-		damage_voxel, local_reach, physics_budget.particle_voxel_limit
+		components, physics_budget.particle_voxel_limit
 	)
 	for decision: Dictionary in component_plan:
 		var component: Dictionary = components[int(decision.component_index)]
@@ -1685,15 +1709,6 @@ func _split_disconnected(
 	return created
 
 
-static func _component_near_voxel(
-	component: Dictionary, center: Vector3, reach: float
-) -> bool:
-	var low := Vector3(component.get("minimum", Vector3i.ZERO))
-	var high := Vector3(component.get("maximum", Vector3i.ZERO) + Vector3i.ONE)
-	var closest := center.clamp(low, high)
-	return closest.distance_squared_to(center) <= reach * reach
-
-
 static func _has_structural_support(component: Dictionary) -> bool:
 	return bool(component.get("anchored", false))
 
@@ -1723,20 +1738,47 @@ func _ensure_component_indices(shape: VoxelShape3D, component: Dictionary) -> vo
 	damage_component_fill_ms += (Time.get_ticks_usec() - started) / 1000.0
 
 
+## Un joint roto no cambia ni un voxel: ni el planner de daño ni la conectividad vuelven a mirar la
+## pieza que sostenia. Se reevalua su soporte explicitamente o una reja sin uniones se queda flotando.
+func queue_support_check(body: VoxelBody3D) -> void:
+	if body == null or not is_instance_valid(body) or body.state != VoxelBody3D.State.STATIC:
+		return
+	for shape in body.get_shapes():
+		if shape.anchored:
+			continue
+		_pending_support_checks[shape.get_instance_id()] = {"shape": shape, "epoch": -1}
+
+
+## Un chequeo de soporte diferido solo espera a los fragmentos de su propia oleada de daño o de una
+## anterior. Antes esperaba a que la cola entera se vaciara: con destrucción sostenida y dos
+## fragmentos por frame, ese momento no llegaba nunca y nada se caía.
+func _flush_ready_support_checks() -> void:
+	if _pending_support_checks.is_empty():
+		return
+	var oldest_pending := 9223372036854775807
+	for pending: Dictionary in _pending_fragments:
+		oldest_pending = mini(oldest_pending, int(pending.get("damage_epoch", 0)))
+	var ready: Array[VoxelShape3D] = []
+	for key: int in _pending_support_checks.keys():
+		var entry: Dictionary = _pending_support_checks[key]
+		if int(entry.epoch) >= oldest_pending:
+			continue
+		_pending_support_checks.erase(key)
+		var shape_variant: Variant = entry.shape
+		if is_instance_valid(shape_variant):
+			ready.append(shape_variant as VoxelShape3D)
+	if not ready.is_empty():
+		_drop_unsupported(ready)
+
+
 func _process(delta: float) -> void:
 	_process_physics_impacts()
 	_flush_pending_fragments()
-	if _pending_fragments.is_empty() and not _pending_support_checks.is_empty():
-		var deferred_support: Array[VoxelShape3D] = []
-		for shape_variant: Variant in _pending_support_checks.values():
-			if is_instance_valid(shape_variant):
-				deferred_support.append(shape_variant as VoxelShape3D)
-		_pending_support_checks.clear()
-		_drop_unsupported(deferred_support)
+	_flush_ready_support_checks()
 	_flush_one_collision_rebuild()
 	_flush_collision_handoff_budget()
-	_process_collision_handoffs()
 	_coalesce_ready_structural_bodies()
+	_process_collision_handoffs()
 	_baked_collision_priority_elapsed += delta
 	if _baked_collision_priority_elapsed >= BAKED_COLLISION_PRIORITY_INTERVAL:
 		_baked_collision_priority_elapsed = 0.0
@@ -1782,14 +1824,17 @@ func _process_collision_handoffs() -> void:
 
 
 func _flush_collision_handoff_budget() -> void:
-	if _collision_handoffs.is_empty():
-		return
+	# `size/is_empty` cuentan solo fragmentos todavía congelados. Un ticket ya liberado puede seguir
+	# aquí únicamente para priorizar la reconstrucción física de su origen.
 	var started := Time.get_ticks_usec()
-	while Time.get_ticks_usec() - started < COLLISION_HANDOFF_BUDGET_USEC:
+	while not _collision_rebuild_queue.is_empty():
 		var selected := _collision_handoffs.select_pending_source() as VoxelBody3D
-		if selected == null:
+		var budget := COLLISION_HANDOFF_BUDGET_USEC if selected != null \
+			else COLLISION_REBUILD_BUDGET_USEC
+		if Time.get_ticks_usec() - started >= budget:
 			return
-		prioritize_collision_rebuild(selected)
+		if selected != null:
+			prioritize_collision_rebuild(selected)
 		var before := _pending_collision_block_count()
 		_flush_one_collision_rebuild()
 		if _pending_collision_block_count() >= before:
@@ -1801,7 +1846,6 @@ func _cleanup_empty_source(shape: VoxelShape3D) -> void:
 		return
 	var body := _body_of(shape)
 	_unregister_shape_spatial(shape)
-	_foundation_cache.erase(shape.get_instance_id())
 	_weld_baseline.erase(shape.get_instance_id())
 	if body == null:
 		shape.queue_free()
@@ -1848,7 +1892,6 @@ func _recover_desynced_shape(shape: VoxelShape3D, key: int) -> void:
 	if not is_instance_valid(shape) or shape.data == null \
 			or shape.last_notified_revision == shape.content_revision():
 		return
-	_foundation_cache.erase(key)
 	shape.recover_unnotified_mutation()
 
 
