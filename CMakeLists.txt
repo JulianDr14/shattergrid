@@ -52,11 +52,38 @@ target_include_directories(shattergrid_core PRIVATE native/include)
 target_link_libraries(shattergrid_core PRIVATE godot::cpp)
 target_compile_definitions(shattergrid_core PRIVATE GODOT_CPP_NO_THREAD_LOCAL)
 
+# Un solo directorio de salida para las tres plataformas: el descriptor .gdextension apunta a
+# `native/bin` y no puede seguir subcarpetas por configuracion. `RUNTIME` cubre la DLL de Windows,
+# `LIBRARY` el .dylib/.so. Los generadores multi-config (Visual Studio) necesitan ademas la variante
+# por configuracion o vuelven a escribir en bin/Release.
+set_target_properties(shattergrid_core PROPERTIES
+	OUTPUT_NAME "shattergrid_core"
+	LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native/bin"
+	RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native/bin"
+)
+foreach(config IN LISTS CMAKE_CONFIGURATION_TYPES)
+	string(TOUPPER "${config}" config_upper)
+	set_target_properties(shattergrid_core PROPERTIES
+		LIBRARY_OUTPUT_DIRECTORY_${config_upper} "${CMAKE_SOURCE_DIR}/native/bin"
+		RUNTIME_OUTPUT_DIRECTORY_${config_upper} "${CMAKE_SOURCE_DIR}/native/bin"
+	)
+endforeach()
+
 if(APPLE)
 	set_target_properties(shattergrid_core PROPERTIES
-		OUTPUT_NAME "shattergrid_core"
-		LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/native/bin"
 		BUILD_RPATH "@loader_path"
 		INSTALL_RPATH "@loader_path"
 	)
+endif()
+
+if(WIN32)
+	# MinGW prefija `lib`; MSVC no. El descriptor declara un unico nombre, asi que se normaliza al
+	# de MSVC: shattergrid_core.dll.
+	set_target_properties(shattergrid_core PROPERTIES PREFIX "")
+endif()
+
+if(MSVC)
+	# voxel_shape_data.cpp pasa de 64 K secciones por objeto; ademas las fuentes son UTF-8 y MSVC
+	# asume la code page del sistema sin esta opcion.
+	target_compile_options(shattergrid_core PRIVATE /bigobj /utf-8 /EHsc)
 endif()

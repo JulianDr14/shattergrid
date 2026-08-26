@@ -30,9 +30,9 @@ La descripción de subsistemas, ownership, invariantes y mediciones está en
 
 ## Requisitos
 
-- macOS (el descriptor GDExtension actual publica el target nativo para esta plataforma).
+- macOS o Windows x86_64 (el descriptor GDExtension publica el target nativo de ambas).
 - Godot 4.7 con Forward+ y Jolt Physics.
-- CMake 3.22+, compilador C++17 y Ninja recomendado.
+- CMake 3.22+, compilador C++17 y Ninja recomendado (en Windows, MSVC 2019+ o MinGW-w64).
 
 `godot-cpp` se descarga en la revisión fijada por CMake; no se versionan dependencias, binarios ni
 cachés de compilación.
