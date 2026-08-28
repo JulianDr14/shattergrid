@@ -85,6 +85,11 @@ const YAW_SPEED := 0.72
 const YAW_GAIN := 3.4
 const YAW_MAX_IMPULSE := 90000.0
 const MOTOR_SIGN := -1.0
+## Tope de la compensacion de guiñada del casco. No es velocidad de punteria -eso es `YAW_SPEED`-
+## sino lo que la corona puede pedir solo para quedarse quieta en el mundo mientras el casco gira,
+## asi que tiene que superar a `TURN_MAX_YAW_SPEED`. Se acota para que un bache que sacuda el casco
+## no dispare la torreta de golpe.
+const YAW_COMPENSATION_LIMIT := 1.6
 
 ## Corte del cañón dentro del modelo de torreta: de x=61 en adelante solo queda el ánima de 6x6
 ## voxeles y el bocacho. Todo lo anterior (mantelete, cesta, techo) se queda en la torreta.
@@ -314,6 +319,17 @@ func yaw() -> float:
 	return wrapf(_plane_yaw(b.global_basis.x) - _plane_yaw(a.global_basis.x), -PI, PI)
 
 
+## Guiñada del casco en rad/s. `_plane_yaw` mide sobre el plano XZ, asi que su derivada es justo la
+## componente vertical de la velocidad angular del casco.
+func _hull_yaw_rate() -> float:
+	if hull == null or not is_instance_valid(hull):
+		return 0.0
+	var physics := hull.get_physics_body() as RigidBody3D
+	if physics == null:
+		return 0.0
+	return clampf(physics.angular_velocity.y, -YAW_COMPENSATION_LIMIT, YAW_COMPENSATION_LIMIT)
+
+
 func is_turret_attached() -> bool:
 	return not _joint_record.is_empty() and not bool(_joint_record.get("broken", false)) \
 		and _joint != null and is_instance_valid(_joint)
@@ -444,11 +460,17 @@ func _physics_process(delta: float) -> void:
 	if not is_turret_attached() or not is_instance_valid(hull) or not is_instance_valid(turret):
 		return
 	var error := wrapf(target_yaw - yaw(), -PI, PI)
-	_joint.set_param(
-		HingeJoint3D.PARAM_MOTOR_TARGET_VELOCITY,
-		MOTOR_SIGN * clampf(error * YAW_GAIN, -YAW_SPEED, YAW_SPEED)
-	)
-	if absf(error) > 0.01:
+	# El motor de la corona manda velocidad RELATIVA al casco, y `target_yaw` tambien es relativo:
+	# con la mira fija en el mundo, girar el casco a omega hace que el objetivo se mueva a -omega.
+	# Un proporcional puro solo puede seguir eso arrastrando un error permanente de omega/YAW_GAIN
+	# -a 1 rad/s son 17 grados- y por eso la torreta se veia girar con el cuerpo. Se le suma la
+	# guiñada del casco con el signo contrario, que la cancela exactamente, y el proporcional se
+	# queda solo con el error de punteria. Los dos terminos se acotan por separado: el de punteria
+	# a la velocidad de la corona, y el de compensacion a un tope mayor, porque si no el casco gira
+	# mas rapido (1,05 rad/s) de lo que la torreta puede compensar (0,72).
+	var command := clampf(error * YAW_GAIN, -YAW_SPEED, YAW_SPEED) - _hull_yaw_rate()
+	_joint.set_param(HingeJoint3D.PARAM_MOTOR_TARGET_VELOCITY, MOTOR_SIGN * command)
+	if absf(error) > 0.01 or absf(command) > 0.01:
 		hull.wake_for_interaction()
 		turret.wake_for_interaction()
 	_aim_barrel()

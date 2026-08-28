@@ -90,6 +90,10 @@ var _water: VoxelWaterSystem
 var _was_swimming := false
 var _driving_vehicle: VoxelVehicle3D
 var _saved_collision_layer := 1
+## Frames de física que faltan para devolverle la colisión a la cápsula tras bajarse del vehículo.
+## Hace falta que Jolt dé un step entero con la pose de salida ya aplicada: reactivar antes -aunque
+## sea al principio del `_physics_process` siguiente- sigue dejando el barrido desde el asiento.
+var _collision_restore_delay := 0
 var _saved_collision_mask := 1
 var _saved_camera_position := Vector3.ZERO
 var _saved_camera_rotation := Vector3.ZERO
@@ -189,6 +193,8 @@ func _physics_process(delta: float) -> void:
 				_update_interaction_hint()
 		else:
 			_leave_vehicle(false)
+		return
+	if not _apply_pending_collision_restore():
 		return
 	var was_on_floor := is_on_floor()
 	var previous_y := global_position.y
@@ -621,8 +627,10 @@ func _toggle_vehicle() -> void:
 		return
 	_driving_vehicle = vehicle
 	_saved_vehicle_entry_position = global_position
-	_saved_collision_layer = collision_layer
-	_saved_collision_mask = collision_mask
+	if _collision_restore_delay <= 0:
+		_saved_collision_layer = collision_layer
+		_saved_collision_mask = collision_mask
+	_collision_restore_delay = 0
 	_saved_camera_position = camera.position
 	_saved_camera_rotation = camera.rotation
 	_saved_camera_fov = camera.fov
@@ -636,19 +644,43 @@ func _toggle_vehicle() -> void:
 	_update_interaction_hint()
 
 
+## Devuelve la colisión guardada al bajarse del vehículo. Tiene que correr en un `_physics_process`
+## posterior al teleport de salida, nunca en el mismo: ver el comentario de `_leave_vehicle`.
+func _apply_pending_collision_restore() -> bool:
+	if _collision_restore_delay <= 0:
+		return true
+	_collision_restore_delay -= 1
+	if _collision_restore_delay > 0:
+		# La cápsula se queda quieta y apagada este frame para que el step de Jolt registre la pose
+		# de salida. Es 1/60 s sin gravedad: no se ve, y evita el empujón al vehículo.
+		return false
+	collision_layer = _saved_collision_layer
+	collision_mask = _saved_collision_mask
+	return true
+
+
 func _leave_vehicle(place_player: bool) -> void:
 	var vehicle := _driving_vehicle
 	_driving_vehicle = null
 	if vehicle != null and is_instance_valid(vehicle):
 		vehicle.clear_driver(self)
-	collision_layer = _saved_collision_layer
+	# La cápsula lleva todo el viaje pegada al asiento, dentro del casco. Devolverle la colisión en
+	# el mismo frame en que se la teletransporta fuera hacía que Jolt tratara ese salto como
+	# movimiento cinemático: el cuerpo barría el vehículo de dentro afuera y se lo llevaba por
+	# delante -medido: 220 m/s de pico, y más cuanto más lejos caía la salida-. De ahí que el tanque
+	# saliera volando y se clavara en el suelo. Se coloca con la colisión aún apagada y se reactiva
+	# en el siguiente `_physics_process`, cuando Jolt ya tiene registrada la pose buena.
+	# `_safe_vehicle_exit` traza con `collision_mask`, así que la máscara se restaura para medir.
 	collision_mask = _saved_collision_mask
 	if place_player and vehicle != null and is_instance_valid(vehicle):
-		global_position = _safe_vehicle_exit(vehicle)
+		var exit_position := _safe_vehicle_exit(vehicle)
+		global_position = exit_position
 		var facing := vehicle.forward_direction()
 		facing.y = 0.0
-		look_at(global_position + (facing.normalized() if facing.length_squared() > 0.01 \
+		look_at(exit_position + (facing.normalized() if facing.length_squared() > 0.01 \
 			else Vector3.FORWARD), Vector3.UP)
+	collision_mask = 0
+	_collision_restore_delay = 2
 	camera.top_level = false
 	camera.position = _saved_camera_position if _saved_camera_position != Vector3.ZERO \
 		else _camera_rest_position
@@ -707,9 +739,17 @@ func _safe_vehicle_exit(vehicle: VoxelVehicle3D) -> Vector3:
 				)
 				if _vehicle_exit_is_clear(swimming_exit, clearance_exclusions):
 					return swimming_exit
-	# El lugar desde el que se entró ya pasó las colisiones y el boundary. Es una red de seguridad
-	# mejor que inventar una coordenada bajo un coche volcado o sobre un precipicio.
-	return _saved_vehicle_entry_position
+	# El punto de entrada estaba libre al subirse, pero el vehículo lleva ya un rato conduciendo y
+	# puede estar aparcado justo encima. Devolverlo sin comprobar metía la cápsula dentro del
+	# compound, y Jolt resolvía esa penetración lanzando al jugador por el aire y clavando el
+	# vehículo contra el suelo — muy visible en el tanque, cuyo casco grande tumba antes los siete
+	# candidates y cae aquí más a menudo.
+	if _vehicle_exit_is_clear(_saved_vehicle_entry_position, clearance_exclusions):
+		return _saved_vehicle_entry_position
+	# Último recurso: sobre el techo del compound. Está libre por construcción -es el tope de los
+	# bounds más 1,8 m- así que el jugador cae encima del vehículo en vez de nacer dentro de él.
+	var candidates := vehicle.get_exit_candidates()
+	return candidates[candidates.size() - 1]
 
 
 func _vehicle_exit_is_clear(position: Vector3, exclusions: Array[RID]) -> bool:

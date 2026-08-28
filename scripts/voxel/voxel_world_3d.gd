@@ -2371,9 +2371,15 @@ func _create_diagnostics() -> void:
 	canvas.layer = 90
 	add_child(canvas)
 	_diagnostics = Label.new()
-	# El HUD principal usa dos lineas desde y=8. Empezar en 42 superponia exactamente su segunda
-	# linea; se reserva una franja completa y se refuerza el contraste sobre escenas claras.
-	_diagnostics.position = Vector2(12, 68)
+	# Anclado abajo a la izquierda y creciendo hacia arriba. Con una posicion fija arriba habia que
+	# adivinar cuantas lineas ocupaba el contador de `main.gd`, y en cuanto le crecio la tercera se
+	# solapaban. Desde abajo da igual cuanto crezca cualquiera de los dos; se dejan 40 px para la
+	# linea de ayuda.
+	_diagnostics.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	_diagnostics.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_diagnostics.offset_left = 12.0
+	_diagnostics.offset_top = -40.0
+	_diagnostics.offset_bottom = -40.0
 	_diagnostics.add_theme_font_size_override("font_size", 13)
 	_diagnostics.add_theme_color_override("font_color", Color(1.0, 1.0, 1.0, 0.88))
 	_diagnostics.add_theme_color_override("font_shadow_color", Color(0.0, 0.0, 0.0, 0.95))
