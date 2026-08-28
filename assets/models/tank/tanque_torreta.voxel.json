@@ -2,10 +2,10 @@
   "scale": 1,
   "anchored": false,
   "materials": {
-    "122": {"hardness": 2.4, "density": 7800.0, "metallic": 0.6, "roughness": 0.8},
-    "123": {"hardness": 2.4, "density": 7800.0, "metallic": 0.7, "roughness": 0.6},
-    "124": {"hardness": 2.4, "density": 7800.0, "metallic": 0.8, "roughness": 0.45},
-    "170": {"hardness": 4.5, "density": 7900.0, "metallic": 0.85, "roughness": 0.35},
+    "122": {"hardness": 1000000.0, "density": 8000.0, "metallic": 0.6, "roughness": 0.8},
+    "123": {"hardness": 1000000.0, "density": 8000.0, "metallic": 0.7, "roughness": 0.6},
+    "124": {"hardness": 1000000.0, "density": 8000.0, "metallic": 0.8, "roughness": 0.45},
+    "170": {"hardness": 1000000.0, "density": 8000.0, "metallic": 0.85, "roughness": 0.35},
     "5": {"hardness": 0.5, "density": 2500.0, "metallic": 0.1, "roughness": 0.05, "opacity": 0.5}
   }
 }

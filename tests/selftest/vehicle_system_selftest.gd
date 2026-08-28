@@ -258,19 +258,20 @@ func _run() -> void:
 	_check(bool(player.call("is_driving_vehicle")) and player.collision_layer == 0,
 		"E ocupa el vehículo y desactiva la cápsula del jugador")
 	_check(vehicle.headlights_active(), "la ruta real de E también enciende faros")
-	var pitch_before := float(player.get("_vehicle_camera_pitch"))
-	_check(float(player.call(
-		"vehicle_camera_pitch_after_input", pitch_before, 12.0
-	)) > pitch_before,
+	var rig := player.get("_vehicle_camera") as VehicleCamera
+	var pitch_before := rig.pitch
+	_check(VehicleCamera.pitch_after_input(pitch_before, 12.0, 0.0022) > pitch_before,
 		"el eje vertical del orbitador quedó invertido")
+	# La sensibilidad escala con tan(fov/2): al hacer zoom el mismo gesto debe girar menos.
+	_check(VehicleCamera.aim_sensitivity(30.0) < VehicleCamera.aim_sensitivity(78.0),
+		"la sensibilidad no baja al hacer zoom")
 	var zoom_in := InputEventMouseButton.new()
 	zoom_in.button_index = MOUSE_BUTTON_WHEEL_UP
 	zoom_in.pressed = true
 	for _step in 8:
 		player.call("_unhandled_input", zoom_in)
-	_check(bool(player.call("vehicle_camera_is_interior")),
-		"la rueda lleva el zoom hasta la vista interior")
-	player.call("_update_vehicle_camera", 1.0)
+	_check(rig.is_interior(), "la rueda lleva el zoom hasta la vista interior")
+	rig.update(1.0, player_camera, vehicle, [] as Array[RID])
 	_check(player_camera.global_position.distance_to(vehicle.get_driver_view_position()) < 0.15,
 		"la vista interior usa el punto de conductor authored del XML")
 	player.call("_toggle_vehicle")

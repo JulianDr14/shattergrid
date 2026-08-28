@@ -9,12 +9,15 @@ const VOXEL_SIZE := 0.1
 
 ## Cuántos voxeles de 10 cm ocupa cada voxel del `.vox` de origen.
 ##
-## Teardown modela a 10 cm con el jugador midiendo 18 voxeles, así que una casa de dos plantas ronda
-## los 85-90 voxeles de alto y su puerta los 20. Los Metro Minis están modelados como maquetas: 64
-## voxeles de alto y puertas de 12, o sea una casa de 6,4 m con una puerta de 1,2 m por la que el
-## jugador de 1,8 m no cabe. A 2 la casa sube a 12,8 m y la puerta a 2,4 m, que ya es una fachada
-## urbana por la que se entra andando. El `.voxel.json` puede fijar otro valor por modelo.
-const MODEL_SCALE := 2
+## La escala del proyecto es 1 voxel = 10 cm y vale para todo el mapa por igual: casas, props y
+## tanque comparten rejilla, así que un modelo de 64 voxeles de alto mide 6,4 m y el tanque, de 78
+## voxeles de largo, mide 7,8 m. Antes las casas entraban a 2 (20 cm por voxel de origen) y salían
+## de 12,8 m: cuatro veces la altura del tanque, que es lo que hacía irreconocible el barrio.
+##
+## Contrapartida conocida de los Metro Minis: están modelados como maqueta, con puertas de 12
+## voxeles, y a esta escala miden 1,2 m — el jugador de 1,8 m no entra por ellas. Es un defecto del
+## arte de origen, no de la escala; el `.voxel.json` de un modelo concreto puede fijar otro valor.
+const MODEL_SCALE := 1
 
 ## Grosor en voxeles de 10 cm de la cáscara que sobrevive al vaciado. Dos deja muros de 20 cm.
 const SHELL_THICKNESS := 2

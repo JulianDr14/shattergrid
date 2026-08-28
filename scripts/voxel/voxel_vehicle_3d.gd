@@ -400,8 +400,22 @@ func get_camera_target() -> Vector3:
 ## dibujarlo, pero consultar `global_transform` desde `_process` devuelve el último tick físico y
 ## vuelve a introducir el escalonado que la interpolación intenta eliminar. Estas variantes reciben
 ## una única muestra interpolada y derivan de ella todos los puntos de cámara coherentemente.
-func get_camera_target_from_transform(vehicle_transform: Transform3D) -> Vector3:
-	return vehicle_transform * _seat_local + Vector3.UP * 0.35
+##
+## Pivote de la cámara orbital: descarta el roll y el pitch del chasis y conserva solo el yaw. El
+## asiento sigue girando con el vehículo, pero un bache que balancea el casco ya no traslada el punto
+## sobre el que orbita la vista. Ese balanceo era el temblor que hacía imposible apuntar, y entraba
+## por la posición aunque la dirección de mira no se suavizara.
+func get_camera_pivot(vehicle_transform: Transform3D) -> Vector3:
+	var forward := vehicle_transform.basis.z
+	forward.y = 0.0
+	if forward.length_squared() < 0.0001:
+		# Casco volcado sobre el morro: el eje Z no proyecta en el plano y hay que caer a otro eje
+		# antes de normalizar un vector nulo.
+		forward = Vector3(vehicle_transform.basis.y.x, 0.0, vehicle_transform.basis.y.z)
+		if forward.length_squared() < 0.0001:
+			forward = Vector3.BACK
+	var yaw_only := Basis(Vector3.UP, atan2(forward.x, forward.z))
+	return vehicle_transform.origin + yaw_only * _seat_local
 
 
 func get_driver_view_position() -> Vector3:

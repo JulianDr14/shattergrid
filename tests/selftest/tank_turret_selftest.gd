@@ -1,8 +1,7 @@
 extends SceneTree
-## Regresión completa del tanque: puntería, control diferencial, corona bajo carga y desprendimiento
-## exclusivo por explosión.
+## Regresión completa del tanque: puntería en los dos ejes, control diferencial y corona bajo carga.
+## La torreta no se desprende nunca, ni siquiera por explosión.
 
-const Player := preload("res://scripts/core/player.gd")
 
 class Gunner:
 	extends Node3D
@@ -57,10 +56,10 @@ func _discard_test_tank(world: VoxelWorld3D, tank: VoxelTank3D) -> void:
 	# del controlador dentro de VoxelWorld, no hijos que desaparezcan al borrar `tank`.
 	if tank._joints != null and is_instance_valid(tank._joints):
 		tank._joints.break_record(tank._joint_record)
-	for body in [tank.hull, tank.turret]:
+	for body in [tank.hull, tank.turret, tank.barrel]:
 		if body != null and is_instance_valid(body):
 			world.unregister_body(body)
-	for node in [tank.hull, tank.turret, tank]:
+	for node in [tank.hull, tank.turret, tank.barrel, tank]:
 		if node != null and is_instance_valid(node):
 			node.queue_free()
 
@@ -93,9 +92,9 @@ func _run() -> void:
 		await physics_frame
 	var joints := world.get_node_or_null("VoxelTankJoints") as VoxelJoints
 	_check(joints != null, "el tanque es dueño de su registro de corona")
-	_check(joints.live_count() == 1, "la corona entra viva")
-	_check(tank.vehicle.attached_bodies().size() == 2,
-		"cámara y colisiones reconocen casco y torreta como un solo tanque")
+	_check(joints.live_count() == 2, "corona y muñones entran vivos")
+	_check(tank.vehicle.attached_bodies().size() == 3,
+		"cámara y colisiones reconocen casco, torreta y cañón como un solo tanque")
 	var camera_profile := tank.vehicle.get_camera_profile()
 	_check(is_equal_approx(float(camera_profile.distance), 8.4)
 		and is_equal_approx(float(camera_profile.fov), 78.0),
@@ -117,6 +116,26 @@ func _run() -> void:
 	var off := absf(barrel.normalized().angle_to(wanted.normalized()))
 	print("  desvio del canon: %.1f grados" % rad_to_deg(off))
 	_check(off < 0.15, "la torreta sigue la mira de la cámara")
+
+	# El cañón cabecea en sus muñones, no la torreta entera: apuntando a un blanco alto tiene que
+	# subir, y quedarse dentro del recorrido de un carro real.
+	_check(tank.barrel != null, "el cañón se separa de la torreta en piezas propias")
+	gunner.camera.look_at(Vector3(20, 14, -14))
+	for _frame in 180:
+		await physics_frame
+	var high_pitch := tank.barrel_pitch()
+	gunner.camera.global_position = Vector3(-10, 2, 12)
+	gunner.camera.look_at(Vector3(20, -6, -14))
+	for _frame in 180:
+		await physics_frame
+	var low_pitch := tank.barrel_pitch()
+	print("  cabeceo: alto %.1f°, bajo %.1f°" % [
+		rad_to_deg(high_pitch), rad_to_deg(low_pitch),
+	])
+	_check(high_pitch - low_pitch > deg_to_rad(8.0), "el cañón sube y baja siguiendo la mira")
+	_check(high_pitch < deg_to_rad(VoxelTank3D.BARREL_MAX_PITCH_DEG + 1.0)
+		and low_pitch > deg_to_rad(VoxelTank3D.BARREL_MIN_PITCH_DEG - 1.0),
+		"el cabeceo respeta los topes del carro")
 	tank.vehicle.clear_driver(gunner)
 
 	# El cañón sigue horizontal: si el eje de la bisagra fuese el equivocado, la torreta habría
@@ -136,7 +155,7 @@ func _run() -> void:
 		dropped.hull.wake_for_interaction()
 		dropped.turret.wake_for_interaction()
 		await physics_frame
-	_check(joints.live_count() == 2, "la corona aguanta una caida de 30 m")
+	_check(joints.live_count() == 4, "la corona aguanta una caida de 30 m")
 	print("  altura tras caer: %.2f" % dropped.hull_transform().origin.y)
 
 	# Un control diferencial debe poder pivotar parado. El override usa exactamente la misma entrada
@@ -167,6 +186,19 @@ func _run() -> void:
 	_check(tank.vehicle.global_position.distance_to(drive_start) > 0.5,
 		"W hace avanzar el tanque")
 	_check(tank.is_turret_attached(), "acelerar no desprende la torreta")
+
+	# Agarre de oruga: al girar en marcha el tanque cambia de rumbo, no se va de lado con la
+	# trayectoria anterior. Se mide la velocidad transversal respecto a la de avance.
+	tank.vehicle.set_control_override(true, 1.0, 1.0, false)
+	var worst_skid := 0.0
+	for _frame in 90:
+		await physics_frame
+		var speed := tank.vehicle.linear_velocity.length()
+		if speed > 1.0:
+			worst_skid = maxf(worst_skid,
+				absf(tank.vehicle.linear_velocity.dot(tank.vehicle.global_basis.x)) / speed)
+	print("  derrape lateral máximo: %.0f%% de la velocidad" % (worst_skid * 100.0))
+	_check(worst_skid < 0.35, "las orugas agarran de lado en vez de deslizarse")
 	tank.vehicle.set_control_override(false)
 	tank.vehicle.clear_driver(driver)
 	_discard_test_tank(world, tank)
@@ -224,27 +256,45 @@ func _run() -> void:
 	rammer.vehicle.set_control_override(false)
 	rammer.vehicle.clear_driver(rammer_driver)
 
-	# Una explosión que toca el conjunto sí libera la corona y le da el golpe vertical de lectura.
+	# Ni una explosión encima del conjunto separa la torreta: la corona es `breakable: false`.
 	var explosive := VoxelTank3D.spawn(world, Vector3(10.0, 1.0, 12.0))
 	for _frame in 24:
 		await physics_frame
-	var turret_rigid := explosive.turret.get_physics_body() as RigidBody3D
+	var armour_voxels := explosive.hull.get_total_voxels()
 	var blast := explosive.vehicle.get_world_bounds().get_center()
 	world.damage_sphere(blast, 0.4, 0.01, {"cause": "explosion"})
-	for _frame in 4:
+	for _frame in 8:
 		await physics_frame
-	print("  velocidad Y tras explosión: casco %.2f, torreta %.2f" % [
-		explosive.vehicle.linear_velocity.y, turret_rigid.linear_velocity.y,
-	])
-	_check(not explosive.is_turret_attached(), "una explosión sí desprende la torreta")
-	_check(turret_rigid.linear_velocity.y - explosive.vehicle.linear_velocity.y > 1.0,
-		"la torreta sale despedida respecto al casco al explotar")
+	print("  separación de corona tras explosión: %.3f m" % explosive.turret_anchor_separation())
+	_check(explosive.is_turret_attached(), "una explosión no desprende la torreta")
+	_check(explosive.turret_anchor_separation() < VoxelJoints.BREAK_SEPARATION,
+		"la corona sigue cerrada tras la explosión")
+	# El blindaje entra como `heavymetal`: una explosión que abre un muro de madera no le quita ni un
+	# voxel al tanque.
+	_check(explosive.hull.get_total_voxels() == armour_voxels,
+		"el casco no pierde blindaje con la explosión")
 
 	# La camara de puntería es yaw de mundo: girar el casco no puede arrastrar la mira.
-	var yaw := Player.camera_yaw_from_forward(Vector3(0.6, 0.0, -0.8))
-	var back := Player.camera_aim_direction(yaw, 0.0)
+	var yaw := VehicleCamera.yaw_from_forward(Vector3(0.6, 0.0, -0.8))
+	var back := VehicleCamera.aim_direction(yaw, 0.0)
 	_check(back.distance_to(Vector3(0.6, 0.0, -0.8)) < 0.01, "el yaw de camara va y vuelve")
-	_check(Player.camera_aim_direction(0.0, 0.5).y < -0.4, "pitch positivo mira hacia abajo")
+	_check(VehicleCamera.aim_direction(0.0, 0.5).y < -0.4, "pitch positivo mira hacia abajo")
+
+	# El pivote orbital solo hereda posicion y yaw: un casco balanceado no puede moverlo.
+	var level_pivot := VehicleCamera.pivot(
+		tank.vehicle.get_camera_pivot(Transform3D(Basis.IDENTITY, Vector3(3.0, 1.0, -2.0))), 1.55
+	)
+	var rolled_pivot := VehicleCamera.pivot(tank.vehicle.get_camera_pivot(
+		Transform3D(Basis(Vector3.BACK, 0.35), Vector3(3.0, 1.0, -2.0))
+	), 1.55)
+	_check(level_pivot.distance_to(rolled_pivot) < 0.001,
+		"el roll del casco mueve el pivote de camara")
+	var turned_pivot := VehicleCamera.pivot(tank.vehicle.get_camera_pivot(
+		Transform3D(Basis(Vector3.UP, PI * 0.5), Vector3(3.0, 1.0, -2.0))
+	), 1.55)
+	_check(level_pivot.distance_to(turned_pivot) > 0.001 or tank.vehicle.get_camera_pivot(
+		Transform3D.IDENTITY
+	).is_equal_approx(Vector3.ZERO), "el yaw del casco si debe girar el pivote")
 
 	print("fallos: %d" % failures)
 	quit(1 if failures > 0 else 0)

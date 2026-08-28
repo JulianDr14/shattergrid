@@ -57,14 +57,19 @@ func _ready() -> void:
 	_voxel_world.renderer_settings.sun_shadows_enabled = \
 		not "--no-voxel-sun-shadows" in OS.get_cmdline_user_args()
 	if not await _load_teardown_map():
-		# Calle en el eje z con el jugador entrando por el sur. Las fachadas miden 12,8 m, así que
-		# los 28 m entre aceras dejan una calzada de ancho creíble en vez de casas pegadas.
+		# Calle en el eje z con el jugador entrando por el sur. A 10 cm por voxel las fachadas miden
+		# 6,4 m y los ejes a x=±7 dejan 7,6 m de calzada, por la que pasa el tanque (3,8 m de ancho).
+		#
+		# Solo se repiten estos tres modelos: `casa_moderna` mide 2,4 m de alto y `casa_buhardilla`
+		# 3,0 m, o sea menos que los 3,31 m del tanque. Son maquetas achatadas de los Metro Minis y
+		# junto a ellas el tanque parecía gigante; repetir una casa creíble engaña menos que alinear
+		# un barrio de casetas.
 		for placement: Array in [
-			["casa_dos_plantas", Vector3(-14, 0, -8)],
-			["casa_barrio", Vector3(-14, 0, 10)],
-			["casa_garaje", Vector3(14, 0, -6)],
-			["casa_moderna", Vector3(16, 0, 12)],
-			["casa_buhardilla", Vector3(-2, 0, -26)],
+			["casa_dos_plantas", Vector3(-7, 0, -4)],
+			["casa_barrio", Vector3(-7, 0, 5)],
+			["casa_barrio", Vector3(-7, 0, 14)],
+			["casa_garaje", Vector3(7, 0, -3)],
+			["casa_dos_plantas", Vector3(7, 0, 6)],
 		]:
 			_voxel_world.create_body_from_asset(
 				"res://assets/models/houses/%s.vox" % placement[0], Transform3D(Basis.IDENTITY, placement[1])
