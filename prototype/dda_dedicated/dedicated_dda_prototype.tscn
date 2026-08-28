@@ -1,6 +1,6 @@
 [gd_scene load_steps=2 format=3]
 
-[ext_resource path="res://prototype/dedicated_dda_prototype.gd" type="Script" id="1"]
+[ext_resource path="res://prototype/dda_dedicated/dedicated_dda_prototype.gd" type="Script" id="1"]
 
 [node name="DedicatedDDAPrototype" type="Node3D"]
 script = ExtResource("1")

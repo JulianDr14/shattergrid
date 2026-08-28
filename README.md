@@ -46,7 +46,7 @@ godot --editor --path .
 ```
 
 Después de importar el proyecto, ejecuta `main.tscn`. Si no hay ningún mapa externo configurado,
-se carga automáticamente el pequeño escenario incluido en `models/`.
+se carga automáticamente el pequeño escenario incluido en `assets/models/`.
 
 ## Mapas externos opcionales
 
@@ -107,7 +107,7 @@ de vehículos, requieren `SHATTERGRID_MAP` o el mapa local en
 | `shaders/` | DDA, uploads regionales, agua y cables |
 | `tests/` | Autotests, sondas físicas y benchmarks reproducibles |
 | `prototype/` | Bancos aislados del renderer |
-| `models/` | Escenario voxel incluido y modelos con atribución documentada |
+| `assets/models/` | Escenario voxel incluido y modelos con atribución documentada |
 
 ## Licencia
 

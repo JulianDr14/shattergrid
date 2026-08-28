@@ -2,9 +2,9 @@ extends Node3D
 ## Renderer feasibility gate for the Teardown-style spatial DDA path.
 ##
 ## Run interactively:
-##   godot --path . res://prototype/dda_prototype.tscn
+##   godot --path . res://prototype/dda_basic/dda_prototype.tscn
 ## Run the repeatable gate:
-##   godot --path . res://prototype/dda_prototype.tscn -- --benchmark
+##   godot --path . res://prototype/dda_basic/dda_prototype.tscn -- --benchmark
 
 const VOXEL_SIZE := 0.1
 const VOLUME_SIZE := 64
@@ -15,8 +15,8 @@ const BASELINE_WARMUP_FRAMES := 30
 const BASELINE_SAMPLE_FRAMES := 120
 
 var _shape: VoxelShapeData
-var _atlas := preload("res://prototype/voxel_atlas_3d.gd").new()
-var _macro_atlas := preload("res://prototype/voxel_atlas_3d.gd").new()
+var _atlas := preload("res://prototype/dda_dedicated/voxel_atlas_3d.gd").new()
+var _macro_atlas := preload("res://prototype/dda_dedicated/voxel_atlas_3d.gd").new()
 var _material: ShaderMaterial
 var _dda_view: MultiMeshInstance3D
 var _camera: Camera3D
@@ -57,7 +57,7 @@ func _ready() -> void:
 		return
 
 	_material = ShaderMaterial.new()
-	_material.shader = load("res://shaders/voxel_dda.gdshader")
+	_material.shader = load("res://shaders/voxel/voxel_dda.gdshader")
 	_material.set_shader_parameter("voxel_texture", _atlas.texture)
 	_material.set_shader_parameter("macro_texture", _macro_atlas.texture)
 	_material.set_shader_parameter("palette_texture", _create_palette())

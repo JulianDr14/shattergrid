@@ -2,9 +2,9 @@ extends Node3D
 ## Renderer feasibility gate for the dedicated RenderingDevice DDA path.
 ##
 ## Run interactively:
-##   godot --path . res://prototype/dedicated_dda_prototype.tscn
+##   godot --path . res://prototype/dda_dedicated/dedicated_dda_prototype.tscn
 ## Run the repeatable gate:
-##   godot --path . res://prototype/dedicated_dda_prototype.tscn -- --benchmark
+##   godot --path . res://prototype/dda_dedicated/dedicated_dda_prototype.tscn -- --benchmark
 
 const VOXEL_SIZE := 0.1
 const VOLUME_SIZE := 64
@@ -15,8 +15,8 @@ const BASELINE_WARMUP_FRAMES := 30
 const BASELINE_SAMPLE_FRAMES := 120
 
 var _shape: VoxelShapeData
-var _atlas := preload("res://prototype/voxel_atlas_3d.gd").new()
-var _macro_atlas := preload("res://prototype/voxel_atlas_3d.gd").new()
+var _atlas := preload("res://prototype/dda_dedicated/voxel_atlas_3d.gd").new()
+var _macro_atlas := preload("res://prototype/dda_dedicated/voxel_atlas_3d.gd").new()
 var _effect: DedicatedVoxelDDAEffect
 var _compositor: Compositor
 var _camera: Camera3D

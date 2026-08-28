@@ -6,7 +6,7 @@ extends RefCounted
 ## non-integer prototype keeps a texture-copy fallback; the product R8UI path never replaces the
 ## full volume, so a small crater does not scale with the complete asset.
 
-const REGION_UPLOAD_SHADER := preload("res://shaders/voxel_region_upload.glsl")
+const REGION_UPLOAD_SHADER := preload("res://shaders/voxel/voxel_region_upload.glsl")
 
 var texture: Texture3DRD
 var dimensions := Vector3i.ZERO

@@ -6,7 +6,7 @@ extends CompositorEffect
 ## writes both HDR color and reverse-Z depth into Godot's live scene buffers. No proxy geometry
 ## or per-Shape material is submitted to Godot's spatial renderer.
 
-const SHADER_FILE := preload("res://shaders/voxel_dda_dedicated.glsl")
+const SHADER_FILE := preload("res://shaders/voxel/voxel_dda_dedicated.glsl")
 
 var visualize_steps := false
 

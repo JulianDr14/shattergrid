@@ -67,7 +67,7 @@ func _ready() -> void:
 			["casa_buhardilla", Vector3(-2, 0, -26)],
 		]:
 			_voxel_world.create_body_from_asset(
-				"res://models/%s.vox" % placement[0], Transform3D(Basis.IDENTITY, placement[1])
+				"res://assets/models/houses/%s.vox" % placement[0], Transform3D(Basis.IDENTITY, placement[1])
 			)
 	_tank = VoxelTank3D.spawn(
 		_voxel_world,

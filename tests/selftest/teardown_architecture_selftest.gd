@@ -34,7 +34,7 @@ func _crater(hardness: float) -> int:
 
 func _run() -> void:
 	print("arquitectura World -> Body -> Shape")
-	var imported := VoxelAssetImporter.load_asset("res://models/casa_dos_plantas.vox")
+	var imported := VoxelAssetImporter.load_asset("res://assets/models/houses/casa_dos_plantas.vox")
 	_check(not imported.is_empty(), "importa .vox a volumen denso de 10 cm")
 	_check(imported.shapes.size() >= 1, "crea Shapes desde SIZE/XYZI y grafo de escena")
 	var imported_shape: Dictionary = imported.shapes[0]

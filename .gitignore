@@ -31,14 +31,14 @@ compile_commands.json
 # Local reference assets derived from licensed map data
 /assets/models/suv/
 /assets/prototype/
-/scenes/Word.tscn
-/scenes/suv.tscn
-/scenes/cam.gd
-/scenes/cam.gd.uid
-/scenes/car.gd
-/scenes/car.gd.uid
-/scenes/word.gd
-/scenes/word.gd.uid
+/scenes/word_demo/Word.tscn
+/scenes/vehicle_demo/suv.tscn
+/scenes/vehicle_demo/cam.gd
+/scenes/vehicle_demo/cam.gd.uid
+/scenes/vehicle_demo/car.gd
+/scenes/vehicle_demo/car.gd.uid
+/scenes/word_demo/word.gd
+/scenes/word_demo/word.gd.uid
 /tests/probes/suspension_probe.gd
 /tests/probes/suspension_probe.gd.uid
 /tests/benchmarks/word_perf_probe.gd

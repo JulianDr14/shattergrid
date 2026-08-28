@@ -53,7 +53,7 @@ func _init() -> void:
 	visible = not "--water-disabled" in OS.get_cmdline_user_args()
 	cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_material = ShaderMaterial.new()
-	_material.shader = load("res://shaders/water.gdshader")
+	_material.shader = load("res://shaders/water/water.gdshader")
 	_material.set_shader_parameter("wave_normal", _make_wave_texture(NORMAL_TEXTURE_SIZE))
 	_material.set_shader_parameter(
 		"reflections_enabled", not "--water-no-reflections" in OS.get_cmdline_user_args()
@@ -344,7 +344,7 @@ func _build_shore_foam() -> void:
 	_shore_foam.mesh = shore_mesh
 	_shore_foam.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var foam_material := ShaderMaterial.new()
-	foam_material.shader = load("res://shaders/water_foam.gdshader")
+	foam_material.shader = load("res://shaders/water/water_foam.gdshader")
 	foam_material.render_priority = 21
 	_shore_foam.material_override = foam_material
 	add_child(_shore_foam)
@@ -365,7 +365,7 @@ func _setup_ripples() -> void:
 	arrays[Mesh.ARRAY_INDEX] = PackedInt32Array([0, 1, 2, 0, 2, 3])
 	plane.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	var ripple_material := ShaderMaterial.new()
-	ripple_material.shader = load("res://shaders/water_ripple.gdshader")
+	ripple_material.shader = load("res://shaders/water/water_ripple.gdshader")
 	plane.surface_set_material(0, ripple_material)
 	var multi := MultiMesh.new()
 	multi.transform_format = MultiMesh.TRANSFORM_3D

@@ -1,7 +1,7 @@
 extends SceneTree
 
 
-const SOURCE := "res://shaders/voxel_dda_dedicated.glsl"
+const SOURCE := "res://shaders/voxel/voxel_dda_dedicated.glsl"
 
 
 func _init() -> void:

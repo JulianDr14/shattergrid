@@ -7,8 +7,8 @@ extends Node
 ## explosión; acelerar, pivotar o atravesar una pared nunca puede arrancarla por error.
 
 const GROUP := "voxel_tanks"
-const HULL_PATH := "res://models/tanque_casco.vox"
-const TURRET_PATH := "res://models/tanque_torreta.vox"
+const HULL_PATH := "res://assets/models/tank/tanque_casco.vox"
+const TURRET_PATH := "res://assets/models/tank/tanque_torreta.vox"
 
 ## Punto de giro medido desde la esquina mínima del volumen, no desde el origen del `.vox`: el
 ## decoder recorta cada modelo a su contenido, así que el origen del archivo se pierde al importar.

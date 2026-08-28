@@ -69,7 +69,7 @@ func _init() -> void:
 
 	var decoder := VoxelAssetDecoder.new()
 	var decoded: Dictionary = decoder.decode(
-		"res://models/casa_dos_plantas.vox", 2, 2, 0.1
+		"res://assets/models/houses/casa_dos_plantas.vox", 2, 2, 0.1
 	)
 	if not decoded.ok or decoded.shapes.is_empty() \
 			or not decoded.shapes[0].data is VoxelShapeData:
