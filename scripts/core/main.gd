@@ -10,7 +10,7 @@ extends Node3D
 ## `user://`; las siguientes restauran la región inicial y precargan el resto por cercanía.
 ## `--teardown-radius=<metros>` sigue estando para volver a recortar cuando haga falta medir algo.
 const TEARDOWN_MAP_RADIUS := INF
-const LoadingScreenScene := preload("res://scripts/loading_screen.gd")
+const LoadingScreenScene := preload("res://scripts/core/loading_screen.gd")
 const TEARDOWN_NOTICE := "ESTO ES PROPIEDAD DE TUXEDO LABS — solo investigación, no distribuir"
 
 var _loading: Node

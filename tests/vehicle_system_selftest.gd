@@ -237,7 +237,7 @@ func _run() -> void:
 	level.add_child(hud)
 	var player := CharacterBody3D.new()
 	player.name = "Player"
-	player.set_script(load("res://scripts/player.gd"))
+	player.set_script(load("res://scripts/core/player.gd"))
 	var player_camera := Camera3D.new()
 	player_camera.name = "Camera3D"
 	player_camera.position = Vector3(0.0, 1.65, 0.0)

@@ -74,7 +74,7 @@ func _climb(riser: float) -> Dictionary:
 		shape.position = Vector3(0.0, height * 0.5, -1.0 - TREAD * i)
 		stairs.add_child(shape)
 
-	var player: CharacterBody3D = load("res://scripts/player.gd").new()
+	var player: CharacterBody3D = load("res://scripts/core/player.gd").new()
 	var collision := CollisionShape3D.new()
 	var capsule := CapsuleShape3D.new()
 	capsule.radius = 0.4

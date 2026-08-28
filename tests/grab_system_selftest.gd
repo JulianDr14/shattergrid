@@ -58,7 +58,7 @@ func _run() -> void:
 
 	var player := CharacterBody3D.new()
 	player.name = "Player"
-	player.set_script(load("res://scripts/player.gd"))
+	player.set_script(load("res://scripts/core/player.gd"))
 	var camera := Camera3D.new()
 	camera.name = "Camera3D"
 	camera.position.y = 1.0

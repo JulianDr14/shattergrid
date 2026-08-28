@@ -3,7 +3,7 @@ extends SceneTree
 
 const XML := "res://tests/fixtures/boundary_map.xml"
 var LEE_XML := VoxelProjectPaths.teardown_map_path()
-const TeardownBoundary := preload("res://scripts/teardown_boundary_3d.gd")
+const TeardownBoundary := preload("res://scripts/teardown/teardown_boundary_3d.gd")
 
 
 func _initialize() -> void:

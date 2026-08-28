@@ -2,7 +2,7 @@ extends SceneTree
 ## Regresión completa del tanque: puntería, control diferencial, corona bajo carga y desprendimiento
 ## exclusivo por explosión.
 
-const Player := preload("res://scripts/player.gd")
+const Player := preload("res://scripts/core/player.gd")
 
 class Gunner:
 	extends Node3D

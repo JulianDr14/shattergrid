@@ -43,7 +43,7 @@ func _run() -> void:
 
 	var player := CharacterBody3D.new()
 	player.name = "Player"
-	player.set_script(load("res://scripts/player.gd"))
+	player.set_script(load("res://scripts/core/player.gd"))
 	var collision := CollisionShape3D.new()
 	collision.name = "Collision"
 	var capsule := CapsuleShape3D.new()

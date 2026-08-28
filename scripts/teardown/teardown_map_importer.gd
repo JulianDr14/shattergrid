@@ -24,9 +24,9 @@ extends RefCounted
 ## `--eager-teardown-cache` permiten depurar cada camino explícitamente.
 
 const DEFAULT_RADIUS := 45.0
-const TeardownBoundary := preload("res://scripts/teardown_boundary_3d.gd")
-const VoxelBodyScript := preload("res://scripts/voxel_body_3d.gd")
-const VoxelShapeScript := preload("res://scripts/voxel_shape_3d.gd")
+const TeardownBoundary := preload("res://scripts/teardown/teardown_boundary_3d.gd")
+const VoxelBodyScript := preload("res://scripts/voxel/voxel_body_3d.gd")
+const VoxelShapeScript := preload("res://scripts/voxel/voxel_shape_3d.gd")
 
 ## Tope de celdas densas que se admite cargar. El mapa entero son 443 M de celdas y el motor
 ## guarda un byte por celda, así que sin freno el import se come la RAM antes de terminar.

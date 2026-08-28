@@ -92,7 +92,7 @@ func _run() -> void:
 	player_collision.position.y = 0.9
 	player_collision.shape = player_capsule
 	player.add_child(player_collision)
-	player.set_script(load("res://scripts/player.gd"))
+	player.set_script(load("res://scripts/core/player.gd"))
 	root.add_child(player)
 	player.global_position = Vector3(4.0, -1.0, 0.0)
 	player.velocity = Vector3(0.0, -5.0, 0.0)

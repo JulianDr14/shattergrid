@@ -12,11 +12,11 @@ const EXTENSION := ".tdcollision"
 ## Cambiar cualquiera de estas implementaciones invalida automáticamente los artefactos anteriores.
 ## `FORMAT_VERSION` cubre cambios puramente semánticos que no alteren estos archivos.
 const IMPLEMENTATION_FILES := [
-	"res://scripts/teardown_map_cache.gd",
-	"res://scripts/teardown_map_importer.gd",
-	"res://scripts/teardown_palette.gd",
-	"res://scripts/voxel_body_3d.gd",
-	"res://scripts/voxel_world_3d.gd",
+	"res://scripts/teardown/teardown_map_cache.gd",
+	"res://scripts/teardown/teardown_map_importer.gd",
+	"res://scripts/teardown/teardown_palette.gd",
+	"res://scripts/voxel/voxel_body_3d.gd",
+	"res://scripts/voxel/voxel_world_3d.gd",
 	"res://native/bin/libshattergrid_core.dylib",
 ]
 
