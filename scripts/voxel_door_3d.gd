@@ -487,7 +487,12 @@ static func _body_has_material_near(body: VoxelBody3D, point: Vector3, radius: f
 static func _record_joint_is_live(record: Dictionary) -> bool:
 	if record.is_empty() or bool(record.get("broken", false)):
 		return false
-	var joint: Joint3D = record.get("joint")
+	# Un Node en `queue_free` puede seguir guardado como Variant hasta el fin del frame. Comprobarlo
+	# antes del cast tipado evita que una unión retirada ensucie cada tick con "freed instance".
+	var joint_variant: Variant = record.get("joint")
+	if not is_instance_valid(joint_variant):
+		return false
+	var joint := joint_variant as Joint3D
 	return joint != null and is_instance_valid(joint) and not joint.is_queued_for_deletion()
 
 

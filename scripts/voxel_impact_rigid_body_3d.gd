@@ -21,17 +21,29 @@ func _integrate_forces(state: PhysicsDirectBodyState3D) -> void:
 	for index in state.get_contact_count():
 		var collider := state.get_contact_collider_object(index)
 		var collider_id := collider.get_instance_id() if collider != null else 0
+		# `local` identifica el lado local del contacto, no su marco: Godot devuelve esta posición en
+		# coordenadas globales. Volver a aplicar `state.transform` duplica la traslación del Body.
+		var contact_world := state.get_contact_local_position(index)
+		var collider_velocity := state.get_contact_collider_velocity_at_position(index)
 		var relative_velocity := state.get_contact_local_velocity_at_position(index) \
-			- state.get_contact_collider_velocity_at_position(index)
-		var speed := contact_normal_speed(relative_velocity, state.get_contact_local_normal(index))
+			- collider_velocity
+		var normal := state.get_contact_local_normal(index)
+		var speed := contact_normal_speed(relative_velocity, normal)
+		# Una pieza articulada de vehículo puede tocar primero: en el tanque, el cañón sobresale varios
+		# metros del casco. Jolt puede resolver su velocidad local cerca de cero mientras la bisagra
+		# transmite el choque; la velocidad del conjunto en ese punto conserva la energía de llegada.
+		var impact_owner := voxel_owner.vehicle_impact_owner
+		if impact_owner != null and is_instance_valid(impact_owner):
+			var owner_rigid := impact_owner.get_physics_body() as RigidBody3D
+			if owner_rigid != null:
+				var owner_velocity := owner_rigid.linear_velocity \
+					+ owner_rigid.angular_velocity.cross(contact_world - owner_rigid.global_position)
+				speed = maxf(speed, contact_normal_speed(owner_velocity - collider_velocity, normal))
 		if speed < MIN_REPORT_SPEED:
 			continue
 		var impulse := state.get_contact_impulse(index).length()
 		if impulse <= 0.0:
 			continue
-		# `local` identifica el lado local del contacto, no su marco: Godot devuelve esta posición en
-		# coordenadas globales. Volver a aplicar `state.transform` duplica la traslación del Body.
-		var contact_world := state.get_contact_local_position(index)
 		var record: Dictionary = contacts.get(collider_id, {
 			"collider": collider, "impulse": 0.0, "speed": 0.0,
 			"point": contact_world,

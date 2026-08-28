@@ -35,6 +35,9 @@ var acceleration := 4.0
 ## acota el perfil de apertura que necesita su frontal para no detenerse contra una pared blanda de
 ## 10 cm como si fuese hormigon. No sustituye la energia del choque ni perfora materiales duros.
 var impact_strength := 4.0
+## Radio frontal opcional para vehículos que no caben por el hueco de un coche (p. ej. un tanque).
+## Un valor negativo conserva la curva automática basada en velocidad y `strength`.
+var impact_radius := -1.0
 var max_steer := 0.46
 var min_steer := 0.12
 var steer_speed := 4.5
@@ -56,6 +59,11 @@ var _override_steer := 0.0
 var _override_handbrake := false
 var _last_mass := -1.0
 var _water_disabled := false
+var _joints: VoxelJoints
+var _camera_distance_hint := -1.0
+var _camera_height_hint := -1.0
+var _camera_max_distance_hint := -1.0
+var _camera_fov_hint := -1.0
 
 
 func configure(owner: VoxelBody3D, descriptor: Dictionary) -> void:
@@ -75,6 +83,11 @@ func configure(owner: VoxelBody3D, descriptor: Dictionary) -> void:
 	max_speed_kmh = clampf(float(attributes.get("topspeed", 80.0)), 8.0, 180.0)
 	acceleration = clampf(float(attributes.get("acceleration", 4.0)), 0.4, 12.0)
 	impact_strength = clampf(float(attributes.get("strength", 4.0)), 0.5, 16.0)
+	impact_radius = float(attributes.get("impact_radius", -1.0))
+	_camera_distance_hint = float(attributes.get("camera_distance", -1.0))
+	_camera_height_hint = float(attributes.get("camera_height", -1.0))
+	_camera_max_distance_hint = float(attributes.get("camera_max_distance", -1.0))
+	_camera_fov_hint = float(attributes.get("camera_fov", -1.0))
 	var steer_assist := clampf(float(attributes.get("steerassist", 0.15)), 0.0, 1.0)
 	steer_speed = lerpf(3.4, 6.2, steer_assist)
 	_visual_body = descriptor.get("visual_body") as VoxelBody3D
@@ -343,14 +356,15 @@ func get_exit_candidates() -> PackedVector3Array:
 
 
 func get_world_bounds() -> AABB:
-	if voxel_owner != null and is_instance_valid(voxel_owner):
-		var shapes := voxel_owner.get_shapes()
-		if not shapes.is_empty():
-			var bounds := shapes[0].world_bounds()
-			for index in range(1, shapes.size()):
-				bounds = bounds.merge(shapes[index].world_bounds())
-			return bounds
-	return AABB(global_position - Vector3.ONE, Vector3.ONE * 2.0)
+	var bounds := AABB()
+	var started := false
+	for body in attached_bodies():
+		for shape in body.get_shapes():
+			bounds = shape.world_bounds() if not started else bounds.merge(shape.world_bounds())
+			started = true
+	if not started:
+		return AABB(global_position - Vector3.ONE, Vector3.ONE * 2.0)
+	return bounds
 
 
 func update_water_submersion(submerged_ratio: float, surface_y: float) -> void:
@@ -402,11 +416,44 @@ func get_driver_view_from_transform(vehicle_transform: Transform3D) -> Vector3:
 
 func get_camera_collision_rids() -> Array[RID]:
 	var result: Array[RID] = []
-	if voxel_owner != null and is_instance_valid(voxel_owner):
-		result.append_array(voxel_owner.get_collision_rids())
+	for body in attached_bodies():
+		result.append_array(body.get_collision_rids())
 	if _visual_body != null and is_instance_valid(_visual_body):
 		result.append_array(_visual_body.get_collision_rids())
 	return result
+
+
+## Todo lo que se mueve con el vehiculo: la carroceria mas lo que cuelgue de ella por joints -la
+## torreta de un tanque, un remolque-. La camara no debe chocar contra ellos ni el conductor salir
+## dentro de ellos.
+func attached_bodies() -> Array[VoxelBody3D]:
+	var result: Array[VoxelBody3D] = []
+	if voxel_owner == null or not is_instance_valid(voxel_owner):
+		return result
+	var joints := _find_joints()
+	if joints == null:
+		result.append(voxel_owner)
+		return result
+	return joints.connected_bodies(voxel_owner)
+
+
+func _find_joints() -> VoxelJoints:
+	if _joints != null and is_instance_valid(_joints):
+		return _joints
+	var world := voxel_owner.get_parent() if is_instance_valid(voxel_owner) else null
+	if world == null:
+		return null
+	for child in world.get_children():
+		if child is VoxelJoints:
+			_joints = child
+			return _joints
+	return null
+
+
+## Un mecanismo creado en runtime puede tener su propio registro aunque el mapa ya tenga otro.
+## Inyectarlo evita elegir por accidente el primer `VoxelJoints` del mundo.
+func set_joint_registry(joints: VoxelJoints) -> void:
+	_joints = joints
 
 
 func forward_direction() -> Vector3:
@@ -415,6 +462,37 @@ func forward_direction() -> Vector3:
 
 func speed_kmh() -> float:
 	return linear_velocity.length() * 3.6
+
+
+## Entrada efectiva del tren motriz. Exponerla evita que un controlador especializado —las orugas
+## del tanque— vuelva a leer `Input` por su cuenta y permite probar el mismo camino con override.
+func control_throttle_input() -> float:
+	if _control_override:
+		return _override_throttle
+	if not has_driver():
+		return 0.0
+	return Input.get_action_strength("move_forward") - Input.get_action_strength("move_back")
+
+
+func control_steer_input() -> float:
+	if _control_override:
+		return _override_steer
+	if not has_driver():
+		return 0.0
+	return Input.get_action_strength("move_left") - Input.get_action_strength("move_right")
+
+
+func has_active_controls() -> bool:
+	return _control_override or has_driver()
+
+
+func get_camera_profile() -> Dictionary:
+	return {
+		"distance": _camera_distance_hint,
+		"height": _camera_height_hint,
+		"max_distance": _camera_max_distance_hint,
+		"fov": _camera_fov_hint,
+	}
 
 
 func set_control_override(enabled: bool, throttle := 0.0, steer_input := 0.0, handbrake := false) -> void:
@@ -481,12 +559,8 @@ func _physics_process(delta: float) -> void:
 		_set_lights(false, false, false)
 		_sync_wheel_visuals()
 		return
-	var throttle := _override_throttle if _control_override else (
-		Input.get_action_strength("move_forward") - Input.get_action_strength("move_back")
-	)
-	var steer_input := _override_steer if _control_override else (
-		Input.get_action_strength("move_left") - Input.get_action_strength("move_right")
-	)
+	var throttle := control_throttle_input()
+	var steer_input := control_steer_input()
 	var handbrake := _override_handbrake if _control_override else Input.is_action_pressed("jump")
 	var longitudinal_speed := linear_velocity.dot(forward_direction())
 	var opposing := absf(longitudinal_speed) > 1.0 and throttle * longitudinal_speed < -0.15
@@ -521,10 +595,7 @@ func _on_sleeping_state_changed() -> void:
 func _wake_attached_bodies() -> void:
 	if voxel_owner == null or not is_instance_valid(voxel_owner):
 		return
-	var world := voxel_owner.get_parent()
-	if world == null:
-		return
-	var joints := world.get_node_or_null("TeardownJoints") as VoxelJoints
+	var joints := _find_joints()
 	if joints != null:
 		joints.wake_connected(voxel_owner)
 

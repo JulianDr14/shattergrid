@@ -1,0 +1,12 @@
+{
+  "scale": 1,
+  "anchored": false,
+  "materials": {
+    "121": {"hardness": 2.4, "density": 7800.0, "metallic": 0.7, "roughness": 0.6},
+    "122": {"hardness": 2.4, "density": 7800.0, "metallic": 0.6, "roughness": 0.8},
+    "124": {"hardness": 2.4, "density": 7800.0, "metallic": 0.8, "roughness": 0.45},
+    "125": {"hardness": 0.6, "density": 1100.0, "metallic": 0.0, "roughness": 0.95},
+    "5": {"hardness": 0.5, "density": 2500.0, "metallic": 0.1, "roughness": 0.05, "opacity": 0.5},
+    "6": {"hardness": 0.5, "density": 2500.0, "metallic": 0.0, "roughness": 0.1, "emission": 2.5}
+  }
+}

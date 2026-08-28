@@ -24,6 +24,9 @@ var continuous_collision := false
 ## Desactivable para medir el motor sin el coste de Jolt: las mallas cóncavas se llevan el 96 % del
 ## tiempo de carga de un mapa grande, así que apagarlas aísla lo que cuesta todo lo demás.
 var collision_enabled := true
+## Una pieza móvil montada sobre un vehículo puede delegar su perfil de choque en la carrocería.
+## Así una torreta abre la pared con la fuerza del tanque sin dañarse a sí misma como prop suelto.
+var vehicle_impact_owner: VoxelBody3D
 var compound_boxes := 0
 var collision_rebuild_ms := 0.0
 var last_faces_ms := 0.0
@@ -230,10 +233,15 @@ func configure_vehicle(descriptor: Dictionary) -> VoxelVehicle3D:
 	# duermen, así que habilitar CCD aquí solo tiene coste para los que realmente están circulando.
 	continuous_collision = true
 	_vehicle_descriptor = descriptor
+	# Quien llegue aqui con el compound ya cocinado lo pierde en el reemplazo del Body y se queda
+	# sin colision: el importador cocina despues, pero un cuerpo promovido en caliente no.
+	var had_collision := compound_boxes > 0
 	_replace_physics_body(true)
 	var vehicle := _physics_body as VoxelVehicle3D
 	if vehicle != null:
 		vehicle.configure(self, descriptor)
+	if had_collision:
+		rebuild_dynamic_collision()
 	return vehicle
 
 

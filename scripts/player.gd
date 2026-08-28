@@ -108,6 +108,9 @@ var _vehicle_camera_pitch := 0.12
 var _vehicle_camera_distance := VEHICLE_CAMERA_DISTANCE
 var _vehicle_camera_target_distance := VEHICLE_CAMERA_DISTANCE
 var _saved_vehicle_entry_position := Vector3.ZERO
+var _vehicle_camera_max_distance := VEHICLE_CAMERA_MAX_DISTANCE
+var _vehicle_camera_height := VEHICLE_CAMERA_HEIGHT
+var _vehicle_camera_fov := 90.0
 
 
 func _ready() -> void:
@@ -164,7 +167,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			return
 		if button.pressed and button.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 			_vehicle_camera_target_distance = minf(
-				VEHICLE_CAMERA_MAX_DISTANCE,
+				_vehicle_camera_max_distance,
 				_vehicle_camera_target_distance + zoom_amount
 			)
 			return
@@ -657,15 +660,17 @@ func _toggle_vehicle() -> void:
 	collision_layer = 0
 	collision_mask = 0
 	velocity = Vector3.ZERO
-	_vehicle_camera_yaw = 0.0
+	# Yaw de mundo, no relativo al chasis: la vista tiene que quedarse donde el jugador la deja
+	# aunque el tanque gire debajo. Se arranca mirando hacia donde mira el vehiculo.
+	_vehicle_camera_yaw = camera_yaw_from_forward(vehicle.forward_direction())
 	_vehicle_camera_pitch = 0.12
-	_vehicle_camera_distance = VEHICLE_CAMERA_DISTANCE
-	_vehicle_camera_target_distance = VEHICLE_CAMERA_DISTANCE
+	_fit_vehicle_camera(vehicle)
+	_vehicle_camera_distance = _vehicle_camera_target_distance
 	camera.top_level = true
+	var aim := camera_aim_direction(_vehicle_camera_yaw, _vehicle_camera_pitch)
 	camera.global_position = vehicle.get_camera_target() \
-		- vehicle.forward_direction() * VEHICLE_CAMERA_DISTANCE \
-		+ Vector3.UP * VEHICLE_CAMERA_HEIGHT
-	camera.look_at(vehicle.get_camera_target() + vehicle.forward_direction() * 2.0, Vector3.UP)
+		- aim * _vehicle_camera_distance + Vector3.UP * _vehicle_camera_height
+	camera.look_at(camera.global_position + aim * 100.0, Vector3.UP)
 	camera.reset_physics_interpolation()
 	_update_interaction_hint()
 
@@ -779,6 +784,32 @@ func _nearest_vehicle() -> VoxelVehicle3D:
 	return best
 
 
+## Un turismo cabe en los 6,2 m de camara por defecto; un tanque mide 7,8 m de casco y 9,6 con el
+## canon, y con la distancia fija la camara se metia dentro del propio vehiculo. Se encuadra por la
+## huella real -que ya incluye la torreta y cualquier remolque- al subirse, una vez.
+func _fit_vehicle_camera(vehicle: VoxelVehicle3D) -> void:
+	var bounds := vehicle.get_world_bounds()
+	var span := maxf(bounds.size.x, bounds.size.z)
+	var profile := vehicle.get_camera_profile()
+	var authored_distance := float(profile.get("distance", -1.0))
+	var authored_height := float(profile.get("height", -1.0))
+	var authored_max_distance := float(profile.get("max_distance", -1.0))
+	var authored_fov := float(profile.get("fov", -1.0))
+	_vehicle_camera_target_distance = authored_distance if authored_distance > 0.0 else clampf(
+		span * 0.95, VEHICLE_CAMERA_DISTANCE, 16.0
+	)
+	_vehicle_camera_max_distance = authored_max_distance if authored_max_distance > 0.0 else maxf(
+		VEHICLE_CAMERA_MAX_DISTANCE, _vehicle_camera_target_distance * 1.6
+	)
+	_vehicle_camera_height = authored_height if authored_height > 0.0 else maxf(
+		VEHICLE_CAMERA_HEIGHT, bounds.size.y * 0.9
+	)
+	_vehicle_camera_fov = authored_fov if authored_fov > 0.0 else _saved_camera_fov
+
+
+## Vista de puntería, al estilo de la vista arcade de World of Tanks: la cámara orbita en yaw de
+## mundo -no con el chasis-, mira por la línea de tiro y no al vehículo, y el centro de la pantalla
+## es la mira. El cañón persigue ese centro; la cámara nunca persigue al cañón.
 func _update_vehicle_camera(delta: float) -> void:
 	if _driving_vehicle == null or not is_instance_valid(_driving_vehicle):
 		return
@@ -789,16 +820,10 @@ func _update_vehicle_camera(delta: float) -> void:
 	if absf(_vehicle_camera_distance - _vehicle_camera_target_distance) < 0.002:
 		_vehicle_camera_distance = _vehicle_camera_target_distance
 	var vehicle_transform := _driving_vehicle.get_global_transform_interpolated()
-	var vehicle_forward := vehicle_transform.basis.z.normalized()
 	var target := _driving_vehicle.get_camera_target_from_transform(vehicle_transform)
-	var orbit_forward := Basis(Vector3.UP, _vehicle_camera_yaw) \
-		* vehicle_forward
-	var horizontal := cos(_vehicle_camera_pitch) * _vehicle_camera_distance
-	var exterior := target - orbit_forward * horizontal \
-		+ Vector3.UP * (
-			VEHICLE_CAMERA_HEIGHT
-			+ sin(_vehicle_camera_pitch) * _vehicle_camera_distance
-		)
+	var aim := camera_aim_direction(_vehicle_camera_yaw, _vehicle_camera_pitch)
+	var exterior := target - aim * _vehicle_camera_distance \
+		+ Vector3.UP * _vehicle_camera_height
 	# La vista interior usa el `<location tags="player">` authored del XML, no el centro de masa.
 	# El blend evita el salto de camara cuando la rueda cruza el ultimo paso de zoom.
 	var cockpit := _driving_vehicle.get_driver_view_from_transform(vehicle_transform)
@@ -807,25 +832,37 @@ func _update_vehicle_camera(delta: float) -> void:
 		VEHICLE_CAMERA_COCKPIT_BLEND_START,
 		_vehicle_camera_distance
 	)
+	var desired := exterior.lerp(cockpit, interior_weight)
+	var smoothed := camera.global_position.lerp(desired, 1.0 - exp(
+		-VEHICLE_CAMERA_SMOOTH * delta
+	))
 	if interior_weight < 0.999:
-		var query := PhysicsRayQueryParameters3D.create(target, exterior)
+		# Resolver la colisión después del suavizado impide que el resorte atraviese una pared un par
+		# de frames aunque el destino final ya estuviera correctamente recortado.
+		var query := PhysicsRayQueryParameters3D.create(target, smoothed)
 		query.collide_with_areas = false
 		query.exclude = [get_rid()]
 		query.exclude.append_array(_driving_vehicle.get_camera_collision_rids())
 		var hit := get_world_3d().direct_space_state.intersect_ray(query)
 		if not hit.is_empty():
-			exterior = (hit.position as Vector3) + (hit.normal as Vector3) * 0.22
-	var desired := exterior.lerp(cockpit, interior_weight)
-	var blend := 1.0 - exp(-VEHICLE_CAMERA_SMOOTH * delta)
-	camera.global_position = camera.global_position.lerp(desired, blend)
-	var cockpit_direction := (
-		orbit_forward * cos(_vehicle_camera_pitch)
-		- Vector3.UP * sin(_vehicle_camera_pitch)
+			smoothed = (hit.position as Vector3) + (hit.normal as Vector3) * 0.22
+	# El encuadre se suaviza; la dirección de mira no. Un lerp sobre la orientación convierte cada
+	# bache del casco en un temblor de la mira y es lo que hacía imposible apuntar.
+	camera.global_position = smoothed
+	camera.look_at(camera.global_position + aim * 100.0, Vector3.UP)
+	camera.fov = lerpf(_vehicle_camera_fov, VEHICLE_CAMERA_COCKPIT_FOV, interior_weight)
+
+
+## Dirección a la que mira la cámara del vehículo. Yaw absoluto en el mundo: girar el tanque no
+## arrastra la mira, que es lo que obligaba a recolocar el ratón en cada curva.
+static func camera_aim_direction(yaw: float, pitch: float) -> Vector3:
+	return Vector3(
+		-sin(yaw) * cos(pitch), -sin(pitch), -cos(yaw) * cos(pitch)
 	).normalized()
-	var exterior_look := target + vehicle_forward * 2.0
-	var cockpit_look := cockpit + cockpit_direction * 10.0
-	camera.look_at(exterior_look.lerp(cockpit_look, interior_weight), Vector3.UP)
-	camera.fov = lerpf(_saved_camera_fov, VEHICLE_CAMERA_COCKPIT_FOV, interior_weight)
+
+
+static func camera_yaw_from_forward(forward: Vector3) -> float:
+	return atan2(-forward.x, -forward.z)
 
 
 func vehicle_camera_zoom_distance() -> float:

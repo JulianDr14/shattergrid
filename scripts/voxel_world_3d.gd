@@ -6,6 +6,9 @@ signal voxels_changed(shape: VoxelShape3D, world_aabb: AABB, dirty_min: Vector3i
 signal body_split(source: VoxelBody3D, created: Array[VoxelBody3D])
 signal body_unregistered(body: VoxelBody3D)
 signal voxel_impact(center: Vector3, removed_voxels: int, blast_radius: float)
+## Evento semántico anterior al corte voxel. Los mecanismos que reaccionan a una explosión —como
+## una torreta que sale despedida— no tienen que deducir la causa a partir de `voxel_impact`.
+signal explosion_started(center: Vector3, radius: float, energy: float)
 
 const GROUP := "voxel_world"
 
@@ -456,6 +459,8 @@ func _index_static_shape(shape: VoxelShape3D) -> void:
 func damage_sphere(
 	center: Vector3, radius: float, energy: float, options: Dictionary = {}
 ) -> Array[Dictionary]:
+	if String(options.get("cause", "impact")) == "explosion":
+		explosion_started.emit(center, radius, energy)
 	# Varias cargas pueden detonarse en el mismo frame. Comparten epoch para que las piezas authored
 	# que todavía se tocan terminen en un solo Body; daños de frames distintos nunca se sueldan.
 	_active_damage_epoch = Engine.get_process_frames()
@@ -681,8 +686,11 @@ func _process_physics_impacts() -> void:
 			continue
 		var target_variant: Variant = record.target
 		var target := target_variant as VoxelBody3D if is_instance_valid(target_variant) else null
+		var profile_source := source.vehicle_impact_owner \
+			if source.vehicle_impact_owner != null \
+				and is_instance_valid(source.vehicle_impact_owner) else source
 		var profile := physics_impact_profile(
-			source, float(record.impulse), float(record.speed)
+			profile_source, float(record.impulse), float(record.speed)
 		)
 		if not bool(profile.valid):
 			continue
@@ -737,12 +745,16 @@ static func physics_impact_profile(
 		if effective_energy < PHYSICS_IMPACT_MIN_ENERGY:
 			return {"valid": false}
 		var strength := vehicle.impact_strength
+		var automatic_radius := clampf(
+			0.55 + normal_speed * 0.10 + strength * 0.035, 0.75, 1.45
+		)
 		return {
 			"valid": true,
 			"vehicle": true,
 			"energy": effective_energy,
 			"strength": strength,
-			"radius": clampf(0.55 + normal_speed * 0.10 + strength * 0.035, 0.75, 1.45),
+			"radius": clampf(vehicle.impact_radius, 0.75, 3.2) \
+				if vehicle.impact_radius > 0.0 else automatic_radius,
 			"penetration": clampf(
 				0.95 + normal_speed * 0.035 + strength * 0.07, 1.05, 2.35
 			),
@@ -2224,8 +2236,13 @@ func _query_shapes(center: Vector3, radius: float) -> Array[VoxelShape3D]:
 		for y in range(low.y, high.y + 1):
 			for x in range(low.x, high.x + 1):
 				var bucket: Array = _dynamic_grid.get(Vector3i(x, y, z), [])
-				for shape: VoxelShape3D in bucket:
-					if not is_instance_valid(shape) or not shape.is_inside_tree() \
+				for shape_variant: Variant in bucket:
+					# La rejilla dinámica se refresca a 10 Hz; una Shape destruida puede seguir en el
+					# bucket unos ticks. Validar el Variant antes del cast evita tocar la instancia libre.
+					if not is_instance_valid(shape_variant):
+						continue
+					var shape := shape_variant as VoxelShape3D
+					if shape == null or not shape.is_inside_tree() \
 							or shape.voxel_count() == 0:
 						continue
 					var key := shape.get_instance_id()

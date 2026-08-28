@@ -1,6 +1,6 @@
 extends SceneTree
 ## Comprueba que el `<environment>` del mapa llega al informe y que los nombres de propiedad que usa
-## `Main._apply_teardown_environment` existen de verdad en Godot.
+## `TeardownEnvironment.apply` existe de verdad en Godot.
 
 var XML := VoxelProjectPaths.teardown_map_path()
 
@@ -39,7 +39,7 @@ func _initialize() -> void:
 	var panorama := XML.get_base_dir() + "/sky_%s.png" % String(attributes.skybox).get_basename()
 	assert(FileAccess.file_exists(panorama), "falta el panorama convertido")
 	var image := Image.load_from_file(panorama)
-	var direction: Vector3 = (load("res://scripts/main.gd") as GDScript).brightest_direction(image)
+	var direction := TeardownEnvironment.brightest_direction(image)
 	var elevation := rad_to_deg(asin(direction.y))
 	var azimuth := rad_to_deg(atan2(direction.x, -direction.z))
 	print("SOL elevacion=%.1f azimut=%.1f" % [elevation, azimuth])
@@ -47,12 +47,11 @@ func _initialize() -> void:
 	assert(absf(azimuth - 143.9) < 3.0, "azimut equivocado")
 
 	# La iluminación que se le pasa al shader de voxeles: tono del sol y ambiente por hemisferios.
-	var main_script := load("res://scripts/main.gd") as GDScript
 	var small := image.duplicate() as Image
 	small.resize(128, 64, Image.INTERPOLATE_BILINEAR)
-	var sun_color: Color = main_script._brightest_color(small)
-	var sky_ambient: Color = main_script._average_color(small, 0, 32)
-	var night: Dictionary = main_script.night_ambient_pair(sky_ambient)
+	var sun_color := TeardownEnvironment.brightest_color(small)
+	var sky_ambient := TeardownEnvironment.average_color(small, 0, 32)
+	var night := TeardownEnvironment.night_ambient_pair(sky_ambient)
 	var graded_sky: Color = night.sky
 	var ground_ambient: Color = night.ground
 	print("SOL color=%.2f %.2f %.2f" % [sun_color.r, sun_color.g, sun_color.b])
@@ -62,13 +61,14 @@ func _initialize() -> void:
 	])
 	# Reescalado a la exposición nocturna elegida para el shader.
 	var mixed := (graded_sky + ground_ambient) * 0.5
-	assert(absf(mixed.get_luminance() - main_script.AMBIENT_LEVEL) < 0.01, "exposición movida")
+	assert(absf(mixed.get_luminance() - TeardownEnvironment.AMBIENT_LEVEL) < 0.01,
+		"exposición movida")
 	# El cielo tiene que quedar por encima del rebote del suelo, que es lo que da el relieve.
 	assert(graded_sky.get_luminance() > ground_ambient.get_luminance(), "cielo más oscuro que el suelo")
 	assert(graded_sky.b > graded_sky.r, "el ambiente nocturno no quedó azulado")
 	# El hemisferio inferior del HDRI sí es más brillante que el superior; comprobarlo deja
 	# constancia de por qué no se usa como rebote.
-	assert(main_script._average_color(small, 32, 64).get_luminance()
+	assert(TeardownEnvironment.average_color(small, 32, 64).get_luminance()
 		> sky_ambient.get_luminance(), "la neblina de abajo ya no es más brillante")
 	print("OK")
 	quit()

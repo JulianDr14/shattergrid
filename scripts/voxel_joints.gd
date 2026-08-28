@@ -63,18 +63,27 @@ func live_count() -> int:
 ## especialmente importante para remolques: el motor despierta el tractor explícitamente, mientras
 ## que el remolque se importó dormido y depende de que el backend propague el wake a través del joint.
 func wake_connected(source: VoxelBody3D, maximum_bodies := 24) -> int:
+	var bodies := connected_bodies(source, maximum_bodies)
+	for body in bodies:
+		body.wake_for_interaction()
+	return bodies.size()
+
+
+## La isla de cuerpos unidos por joints vivos a `source`, el propio incluido. Un vehiculo la usa
+## para saber que es "suyo": la torreta de un tanque o un remolque tienen que contar como parte del
+## vehiculo para la camara, para el hueco por donde sale el conductor y para el wake.
+func connected_bodies(source: VoxelBody3D, maximum_bodies := 24) -> Array[VoxelBody3D]:
+	var result: Array[VoxelBody3D] = []
 	if source == null or not is_instance_valid(source) or maximum_bodies <= 0:
-		return 0
+		return result
 	var pending: Array[VoxelBody3D] = [source]
 	var visited := {}
-	var woken := 0
 	while not pending.is_empty() and visited.size() < maximum_bodies:
 		var body := pending.pop_front() as VoxelBody3D
 		if body == null or not is_instance_valid(body) or visited.has(body.get_instance_id()):
 			continue
 		visited[body.get_instance_id()] = true
-		body.wake_for_interaction()
-		woken += 1
+		result.append(body)
 		for record: Dictionary in _by_body.get(body.get_instance_id(), []):
 			if not VoxelDoor3D._record_joint_is_live(record):
 				continue
@@ -83,7 +92,7 @@ func wake_connected(source: VoxelBody3D, maximum_bodies := 24) -> int:
 			if neighbour != null and is_instance_valid(neighbour) \
 					and not visited.has(neighbour.get_instance_id()):
 				pending.append(neighbour)
-	return woken
+	return result
 
 
 ## Rompe los joints que la onda alcanza y que ya no tienen material a los dos lados. Solo mira los
@@ -92,6 +101,11 @@ func on_impact(center: Vector3, blast_radius: float) -> int:
 	var broken := 0
 	for record in _records:
 		if not VoxelDoor3D._record_joint_is_live(record):
+			continue
+		# Algunas restricciones son parte de un mecanismo gobernado por gameplay. La corona de un
+		# tanque, por ejemplo, no es una viga que el solver pueda declarar rota al pasar por una pared:
+		# su controlador la libera explícitamente cuando el tanque recibe una explosión.
+		if not bool(record.get("breakable", true)):
 			continue
 		var point := VoxelDoor3D._record_position(record)
 		var size := VoxelDoor3D._record_size(record)
@@ -114,6 +128,8 @@ func on_impact(center: Vector3, blast_radius: float) -> int:
 func _physics_process(_delta: float) -> void:
 	for record in _records:
 		if not VoxelDoor3D._record_joint_is_live(record):
+			continue
+		if not bool(record.get("breakable", true)):
 			continue
 		var owner_body := record.get("owner_body") as VoxelBody3D
 		var other_body := record.get("other_body") as VoxelBody3D
