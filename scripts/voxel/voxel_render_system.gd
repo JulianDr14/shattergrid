@@ -40,6 +40,8 @@ var _macros := PackedByteArray()
 var _slots := {}
 var _shapes: Array[VoxelShape3D] = []
 var _transforms := {}
+var _surface_animation_revisions := {}
+var _animated_shapes: Array[VoxelShape3D] = []
 var _entry_indices := {}
 var _reserved_entry_indices := {}
 ## Una hoja que nació en el BVH de vidrio puede alojar cualquier Shape; una hoja que no nació allí
@@ -99,6 +101,7 @@ func _setup(voxel_world: VoxelWorld3D, camera: Camera3D, progress: Callable) -> 
 		if body is VoxelBody3D:
 			for shape in (body as VoxelBody3D).get_shapes():
 				_shapes.append(shape)
+				_watch_shape_surface(shape)
 	if _shapes.is_empty():
 		return true
 	# Cinco edificios + 256 reservas era el caso patológico: una destrucción normal cruzaba el techo
@@ -150,6 +153,7 @@ func register_shape(shape: VoxelShape3D) -> void:
 	if _shapes.has(shape):
 		return
 	_shapes.append(shape)
+	_watch_shape_surface(shape)
 	if not _can_allocate(shape):
 		last_metadata_fallback_reason = "atlas_capacity:%s" % shape.name
 		_rebuild_atlases()
@@ -178,9 +182,11 @@ func register_shape(shape: VoxelShape3D) -> void:
 
 func unregister_shape(shape: VoxelShape3D) -> void:
 	_shapes.erase(shape)
+	_animated_shapes.erase(shape)
 	_deactivate_shape_entry(shape)
 	_slots.erase(shape.get_instance_id())
 	_transforms.erase(shape.get_instance_id())
+	_surface_animation_revisions.erase(shape.get_instance_id())
 	_glass_usage.erase(shape.get_instance_id())
 
 
@@ -248,6 +254,7 @@ func _process(delta: float) -> void:
 		if not effect.update_entry_transforms(transform_updates):
 			last_metadata_fallback_reason = "effect_rejected_transform_batch"
 		last_transform_sync_ms = (Time.get_ticks_usec() - transform_started) / 1000.0
+	_sync_surface_animations()
 	if run_cleanup:
 		var live: Array[VoxelShape3D] = []
 		var live_keys := {}
@@ -794,6 +801,7 @@ func _entry_for_shape(shape: VoxelShape3D, palette_row: int) -> Dictionary:
 		"brick_table_base": slot.brick_table_base,
 		"palette_row": palette_row,
 		"has_glass": _shape_has_glass(shape),
+		"surface_animation": _surface_parameters(shape),
 	}
 
 
@@ -809,7 +817,48 @@ static func _placeholder_entry(entry_index: int) -> Dictionary:
 		"palette_row": 0,
 		# Reserved leaves also exist in the glass BVH, so either material class can occupy them later.
 		"has_glass": true,
+		"surface_animation": {},
 	}
+
+
+func _sync_surface_animations() -> void:
+	if _metadata_dirty:
+		return
+	var updates: Array[Dictionary] = []
+	for shape in _animated_shapes:
+		if not is_instance_valid(shape) or shape.surface_animation == null:
+			continue
+		var key := shape.get_instance_id()
+		var revision := shape.surface_animation.revision
+		if int(_surface_animation_revisions.get(key, -1)) == revision:
+			continue
+		_surface_animation_revisions[key] = revision
+		if _entry_indices.has(key):
+			updates.append({
+				"index": int(_entry_indices[key]),
+				"surface_animation": shape.surface_animation.gpu_parameters(),
+			})
+	if not updates.is_empty() and not effect.update_entry_visuals(updates):
+		last_metadata_fallback_reason = "effect_rejected_surface_animation_batch"
+
+
+static func _surface_parameters(shape: VoxelShape3D) -> Dictionary:
+	return shape.surface_animation.gpu_parameters() if shape.surface_animation != null else {}
+
+
+func _watch_shape_surface(shape: VoxelShape3D) -> void:
+	if not shape.surface_animation_changed.is_connected(_on_shape_surface_animation_changed):
+		shape.surface_animation_changed.connect(_on_shape_surface_animation_changed)
+	_on_shape_surface_animation_changed(shape)
+
+
+func _on_shape_surface_animation_changed(shape: VoxelShape3D) -> void:
+	if shape.surface_animation != null:
+		if not _animated_shapes.has(shape):
+			_animated_shapes.append(shape)
+	else:
+		_animated_shapes.erase(shape)
+	_surface_animation_revisions.erase(shape.get_instance_id())
 
 
 func _deactivate_shape_entry(shape: VoxelShape3D) -> void:
@@ -833,6 +882,7 @@ func _deactivate_entry_key(key: int) -> void:
 		_free_entry_indices.append(entry_index)
 	_entry_indices.erase(key)
 	_transforms.erase(key)
+	_surface_animation_revisions.erase(key)
 	_slots.erase(key)
 	_glass_usage.erase(key)
 

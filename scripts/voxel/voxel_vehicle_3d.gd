@@ -135,7 +135,11 @@ func _create_wheels(descriptor: Dictionary) -> void:
 		var source_transform: Transform3D = record.get("transform", global_transform)
 		var local_position := global_transform.affine_inverse() * source_transform.origin
 		var visual_shapes: Array = record.get("shapes", [])
-		var radius := _wheel_radius(visual_shapes)
+		# Un vehículo puede declarar el radio: en un tanque el rodillo dibujado no toca el suelo, lo
+		# hace la banda, y el raycast tiene que llegar más abajo que el disco.
+		var radius := float((record.attributes as Dictionary).get("radius", 0.0))
+		if radius <= 0.0:
+			radius = _wheel_radius(visual_shapes)
 		if not visual_shapes.is_empty() and is_instance_valid(visual_shapes[0]):
 			local_position = global_transform.affine_inverse() * (
 				(visual_shapes[0] as VoxelShape3D).world_bounds().get_center()

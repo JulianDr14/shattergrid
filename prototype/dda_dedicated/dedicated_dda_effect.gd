@@ -251,7 +251,7 @@ static func _topology_must_rebuild(
 
 
 ## Refit only moving leaves and their paths to the root. On Lee this replaces a full 2,247-Shape
-## metadata/BVH repack per moving frame with one 192-byte Shape record and ~12 48-byte nodes.
+## metadata/BVH repack per moving frame with one 240-byte Shape record and ~12 48-byte nodes.
 func update_entry_transforms(updates: Array[Dictionary]) -> bool:
 	var entry_updates: Array[Dictionary] = []
 	for update: Dictionary in updates:
@@ -260,6 +260,34 @@ func update_entry_transforms(updates: Array[Dictionary]) -> bool:
 			"transform": update.get("transform", Transform3D.IDENTITY),
 		})
 	return update_entries(entry_updates)
+
+
+## Cambia únicamente datos de sombreado. No toca bounds ni transform, por lo que refitear el BVH
+## aquí sería trabajo inútil cada frame para cualquier material animado.
+func update_entry_visuals(updates: Array[Dictionary]) -> bool:
+	if _entries.is_empty():
+		return false
+	var shape_updates := {}
+	var glass_shape_updates := {}
+	for update: Dictionary in updates:
+		var entry_index := int(update.get("index", -1))
+		if entry_index < 0 or entry_index >= _entries.size():
+			return false
+		var entry := (_entries[entry_index] as Dictionary).duplicate(true)
+		entry.surface_animation = update.get("surface_animation", {})
+		_entries[entry_index] = entry
+		shape_updates[entry_index] = DedicatedVoxelBVH.pack_entry(entry)
+		if _glass_original_to_compact.has(entry_index):
+			var glass_index := int(_glass_original_to_compact[entry_index])
+			var glass_entry := (_glass_entries[glass_index] as Dictionary).duplicate(true)
+			glass_entry.surface_animation = entry.surface_animation
+			_glass_entries[glass_index] = glass_entry
+			glass_shape_updates[glass_index] = DedicatedVoxelBVH.pack_entry(glass_entry)
+	_configuration_mutex.lock()
+	_pending_shape_updates.merge(shape_updates, true)
+	_pending_glass_shape_updates.merge(glass_shape_updates, true)
+	_configuration_mutex.unlock()
+	return true
 
 
 ## Updates complete reserved records as fragments appear/disappear, or transform-only records for
@@ -483,7 +511,7 @@ func _apply_pending_configuration() -> void:
 			_free_buffer(_shape_buffer)
 			_shape_buffer = _rd.storage_buffer_create(shape_bytes.size(), shape_bytes)
 			_shape_buffer_bytes = shape_bytes.size()
-	_apply_buffer_updates(_shape_buffer, 192, shape_updates)
+	_apply_buffer_updates(_shape_buffer, 240, shape_updates)
 	_apply_buffer_updates(_node_buffer, 48, node_updates)
 	var glass_node_bytes: PackedByteArray = configuration.get(
 		"glass_node_bytes", PackedByteArray()
@@ -515,7 +543,7 @@ func _apply_pending_configuration() -> void:
 				glass_shape_bytes.size(), glass_shape_bytes
 			)
 			_glass_shape_buffer_bytes = glass_shape_bytes.size()
-	_apply_buffer_updates(_glass_shape_buffer, 192, glass_shape_updates)
+	_apply_buffer_updates(_glass_shape_buffer, 240, glass_shape_updates)
 	_apply_buffer_updates(_glass_node_buffer, 48, glass_node_updates)
 	if configuration.has("brick_table"):
 		var brick_bytes: PackedByteArray = (configuration.brick_table as PackedInt32Array).to_byte_array()

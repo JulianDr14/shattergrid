@@ -3,6 +3,7 @@ extends Node3D
 ## A cropped dense voxel volume owned by a VoxelBody3D.
 
 signal voxels_changed(world_aabb: AABB, dirty_min: Vector3i, dirty_max: Vector3i)
+signal surface_animation_changed(shape: VoxelShape3D)
 
 var data: VoxelShapeData
 var palette: VoxelPalette
@@ -27,6 +28,17 @@ var structural_lineage := 0
 ## integración volumétrica que hacía pesar 105 t a la torre eléctrica de Lee.
 const STRUCTURAL_DYNAMIC_FILL_SCALE := 0.10
 var renderer_slot := -1
+## Efecto superficial opcional. Vive en un componente aparte para que la Shape siga siendo volumen,
+## no un contenedor de reglas específicas de vehículos o materiales animados.
+var surface_animation: VoxelSurfaceAnimation:
+	get:
+		return _surface_animation
+	set(value):
+		if _surface_animation == value:
+			return
+		_surface_animation = value
+		surface_animation_changed.emit(self)
+var _surface_animation: VoxelSurfaceAnimation
 var last_damage_native_ms := 0.0
 var last_damage_notify_ms := 0.0
 ## Última revisión cuya mutación atravesó este wrapper y emitió `voxels_changed`.

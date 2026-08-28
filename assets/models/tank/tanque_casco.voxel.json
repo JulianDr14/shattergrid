@@ -4,6 +4,7 @@
   "materials": {
     "121": {"hardness": 1000000.0, "density": 8000.0, "metallic": 0.7, "roughness": 0.6},
     "122": {"hardness": 1000000.0, "density": 8000.0, "metallic": 0.6, "roughness": 0.8},
+    "123": {"hardness": 1000000.0, "density": 8000.0, "metallic": 0.6, "roughness": 0.8},
     "124": {"hardness": 1000000.0, "density": 8000.0, "metallic": 0.8, "roughness": 0.45},
     "125": {"hardness": 4.5, "density": 7900.0, "metallic": 0.2, "roughness": 0.95},
     "5": {"hardness": 0.5, "density": 2500.0, "metallic": 0.1, "roughness": 0.05, "opacity": 0.5},

@@ -41,15 +41,45 @@ const TRACK_FORWARD_SPEED := 10.5
 const TRACK_REVERSE_SPEED := 5.5
 const TRACK_ACCELERATION := 3.8
 const TRACK_BRAKING := 5.0
-const WHEEL_X := [1.6, 4.0, 6.4]
-const WHEEL_Z := [0.65, 3.15]
-const WHEEL_Y := 0.30
+## Los rodillos de rodaje ya están dibujados en el casco: siete discos de 9 celdas por banda, con
+## paso de 9 celdas. Se sacan a Shapes propias para que la suspensión pueda moverlos. Las celdas van
+## en el orden del decoder: largo, alto, lateral.
+const ROAD_WHEEL_SIZE_CELLS := Vector3i(9, 9, 5)
+const ROAD_WHEEL_FIRST_CELL := Vector3i(10, 2, 1)
+const ROAD_WHEEL_PITCH_CELLS := 9
+const ROAD_WHEEL_COUNT := 7
+## Esquina lateral de cada banda. La celda de fuera es el faldón plano de la oruga, no el rodillo.
+const ROAD_WHEEL_LATERAL_CELLS := [1, 32]
+## Llanta y buje del rodillo. Las cajas del primero y del último rozan el anillo de la banda y el
+## piñón; filtrando por material sale el disco y la oruga se queda entera.
+const ROAD_WHEEL_MATERIALS := [124, 125]
+const ROAD_WHEEL_TRAVEL := "-0.08 0.42"
+## El rodillo dibujado no llega al suelo: quien apoya es la banda. El raycast necesita un radio mayor
+## que el disco para sostener el casco a su altura de marcha de siempre (0.154 m sobre el suelo).
+const ROAD_WHEEL_RADIUS := 0.804
+## Hundimiento del muelle con el tanque parado en llano. El eje físico se monta ese tanto por encima
+## del disco dibujado para que, ya asentado, el rodillo vuelva justo a donde lo pintó el arte. Es un
+## calibrado: si cambian masa, muelle o número de rodillos, se vuelve a medir con
+## `tests/selftest/tank_road_wheel_selftest.gd`.
+const ROAD_WHEEL_SAG := 0.364
 
 ## Agarre lateral de las orugas. Una oruga no patina de costado: sin esto el casco conservaba toda
 ## su velocidad transversal al girar y el tanque derrapaba como un coche sobre hielo. Es la misma
 ## idea que el `sideways slip` de una rueda, pero acotada por una deceleración para que un impacto
 ## lateral fuerte siga empujando el tanque en vez de quedar anulado en un tick.
 const TRACK_LATERAL_GRIP := 26.0
+## El 122 es la cinta continua de las dos orugas, y solo ella: el faldón lateral y los detalles del
+## casco que compartían ese índice pasaron al 123, mismo color y mismas propiedades, para que el
+## patrón no se derramase fuera del bucle.
+const TRACK_MATERIAL := 122
+## Celdas del casco recortado, en el orden que usa el decoder: largo, alto, lateral. El bucle de la
+## banda ocupa las 13 primeras alturas; por encima ya es casco.
+const TRACK_CELL_BOUNDS := AABB(Vector3(0, 0, 0), Vector3(78, 13, 38))
+const TRACK_LINK_PITCH_CELLS := 4.0
+## Los extremos del anillo no son curvas sino chaflanes a 45° de 4 celdas: |dx|+|dy| es constante en
+## toda la diagonal. Con eso el shader distingue la capa exterior del anillo de la interior.
+const TRACK_PROFILE_CHAMFER_CELLS := 4.0
+const TRACK_CELLS_PER_METRE := 10.0
 
 const YAW_SPEED := 0.72
 const YAW_GAIN := 3.4
@@ -87,6 +117,10 @@ var _pitch_joint: HingeJoint3D
 var _pitch_record := {}
 var _joints: VoxelJoints
 var _gunner: Node3D
+var _track_surface: VoxelSurfaceAnimation
+## Avance (m/s) y giro (rad/s) que ha pedido el conductor, con las mismas rampas que la tracción.
+## La banda se anima con esto y no con la velocidad del casco.
+var _track_command := Vector2.ZERO
 
 
 ## Crea el tanque y toda su infraestructura dentro de `world`. La escena principal solo decide dónde
@@ -117,11 +151,15 @@ static func spawn(
 	var trunnion := _shape_point(tank.turret, TURRET_TRUNNION_OFFSET)
 	tank.barrel = _split_barrel(world, tank.turret)
 
+	var road_wheels := _detach_road_wheels(tank.hull)
 	_make_dynamic(tank.hull, HULL_FILL)
+	tank._configure_track_surface()
 	_make_dynamic(tank.turret, TURRET_FILL)
 	if tank.barrel != null:
 		_make_dynamic(tank.barrel, BARREL_FILL)
-	tank.vehicle = tank.hull.configure_vehicle(_tank_vehicle_descriptor(tank.hull))
+	tank.vehicle = tank.hull.configure_vehicle(
+		_tank_vehicle_descriptor(tank.hull, road_wheels)
+	)
 	if tank.vehicle != null:
 		tank.vehicle.display_name = "tanque"
 		tank.vehicle.set_joint_registry(tank._joints)
@@ -288,18 +326,54 @@ static func _plane_yaw(direction: Vector3) -> float:
 	return atan2(-direction.z, direction.x)
 
 
-static func _tank_vehicle_descriptor(body: VoxelBody3D) -> Dictionary:
+## Saca los rodillos del arte del casco a Shapes propias del mismo Body. Siguen siendo geometría del
+## casco para render, masa y destrucción; lo único que gana cada disco es un transform propio que
+## `_sync_wheel_visuals` puede mover. Se devuelven en el orden en que se declaran las ruedas.
+static func _detach_road_wheels(hull: VoxelBody3D) -> Array:
+	var shape := hull.get_shapes()[0]
+	var discs: Array = []
+	for lateral: int in ROAD_WHEEL_LATERAL_CELLS:
+		for index in ROAD_WHEEL_COUNT:
+			var low := Vector3i(
+				ROAD_WHEEL_FIRST_CELL.x + index * ROAD_WHEEL_PITCH_CELLS,
+				ROAD_WHEEL_FIRST_CELL.y,
+				lateral
+			)
+			var cells := shape.data.get_cells()
+			var indices := PackedInt32Array()
+			for cell_index in shape.data.get_live_indices_region(
+				low, low + ROAD_WHEEL_SIZE_CELLS
+			):
+				if ROAD_WHEEL_MATERIALS.has(cells[cell_index]):
+					indices.append(cell_index)
+			var disc := shape.detach_component(indices)
+			if disc == null:
+				push_warning("VoxelTank3D: falta el rodillo %d del casco" % discs.size())
+				continue
+			# El disco se monta hundido: `_create_wheels` clava el eje en su centro y el nodo de la
+			# rueda cuelga lo que mida el muelle, así que subirlo aquí lo devuelve a su sitio en
+			# cuanto el tanque se asienta.
+			disc.transform.origin += Vector3.UP * ROAD_WHEEL_SAG
+			hull.add_voxel_shape(disc, true, false)
+			discs.append(disc)
+	return discs
+
+
+## Cada rodillo del arte es la rueda: `VehicleWheel3D` lo coloca en el centro de su Shape y
+## `_sync_wheel_visuals` lo devuelve pegado a ella, así que rueda y acompaña a la suspensión sin
+## código propio.
+static func _tank_vehicle_descriptor(body: VoxelBody3D, road_wheels: Array) -> Dictionary:
 	var bounds := body.get_shapes()[0].world_bounds()
 	var wheels: Array = []
-	for x in WHEEL_X:
-		for z in WHEEL_Z:
-			wheels.append({
-				"attributes": {"steer": "0", "drive": "1", "travel": "-0.08 0.16"},
-				"transform": Transform3D(
-					Basis.IDENTITY, bounds.position + Vector3(x, WHEEL_Y, z)
-				),
-				"shapes": [],
-			})
+	for disc: VoxelShape3D in road_wheels:
+		wheels.append({
+			"attributes": {
+				"steer": "0", "drive": "1", "travel": ROAD_WHEEL_TRAVEL,
+				"radius": str(ROAD_WHEEL_RADIUS),
+			},
+			"transform": Transform3D(Basis.IDENTITY, disc.world_bounds().get_center()),
+			"shapes": [disc],
+		})
 	return {
 		"attributes": {
 			"topspeed": 45.0,
@@ -417,6 +491,7 @@ static func _pitch_in_frame(direction: Vector3, turret_basis: Basis) -> float:
 ## Diferencial de orugas: W/S son tracción longitudinal; A/D piden yaw aun desde parado.
 func _drive_tracks(delta: float) -> void:
 	if vehicle == null or not is_instance_valid(vehicle) or not vehicle.has_active_controls():
+		_command_tracks(delta, 0.0, 0.0, TRACK_BRAKING, TURN_BRAKING)
 		return
 	# VehicleWheel3D aporta suspensión y contacto, pero una oruga no transmite fuerza como una rueda
 	# libre. Aplicar una aceleración longitudinal acotada al casco da salida fiable desde parado y
@@ -448,6 +523,54 @@ func _drive_tracks(delta: float) -> void:
 	if not is_equal_approx(current, next):
 		vehicle.angular_velocity += up * (next - current)
 		vehicle.sleeping = false
+	_command_tracks(delta, target_speed, target, drive_acceleration, acceleration)
+
+
+func _configure_track_surface() -> void:
+	if hull == null or not is_instance_valid(hull):
+		return
+	_track_surface = VoxelSurfaceAnimation.create(
+		TRACK_MATERIAL, TRACK_CELL_BOUNDS, TRACK_LINK_PITCH_CELLS,
+		TRACK_PROFILE_CHAMFER_CELLS
+	)
+	for shape in hull.get_shapes():
+		shape.surface_animation = _track_surface
+
+
+## La banda sigue la orden del conductor, no el movimiento del casco. Integrar la velocidad real
+## hacía correr las orugas cada vez que una explosión lanzaba el tanque o lo empujaba un muro, con
+## el motor parado: el efecto se leía como un error, no como tracción. Las rampas son las mismas que
+## usa `_drive_tracks`, así que soltar el mando frena la cinta al mismo ritmo que frena el tanque.
+func _command_tracks(
+	delta: float, target_speed: float, target_yaw: float,
+	drive_acceleration: float, yaw_acceleration: float
+) -> void:
+	_track_command = Vector2(
+		move_toward(_track_command.x, target_speed, drive_acceleration * delta),
+		move_toward(_track_command.y, target_yaw, yaw_acceleration * delta)
+	)
+	# Sin mando, la banda no puede correr más que el casco: estamparse contra un muro la para en seco,
+	# como una oruga engranada al piñón, en vez de dejarla frenar sola durante dos segundos. El recorte
+	# solo baja la magnitud, nunca la sube, así que una explosión con el motor parado sigue sin
+	# moverla. Con gas mantenido contra el muro sí patina, que es lo que hace un tanque de verdad.
+	if vehicle != null and is_instance_valid(vehicle):
+		if is_zero_approx(target_speed):
+			var speed := absf(vehicle.linear_velocity.dot(vehicle.forward_direction()))
+			_track_command.x = clampf(_track_command.x, -speed, speed)
+		if is_zero_approx(target_yaw):
+			var spin := absf(vehicle.angular_velocity.dot(vehicle.global_basis.y.normalized()))
+			_track_command.y = clampf(_track_command.y, -spin, spin)
+	if _track_surface == null:
+		return
+	# Un pivote parado suma velocidad a una banda y se la resta a la otra, así que las orugas corren
+	# en sentidos opuestos. El signo sale de v = v_avance + ω × r con r sobre el eje lateral del
+	# casco: la banda de +Z gana ω·semiancho, y `offsets.x` es la de índice lateral bajo, la de -Z.
+	var half_width := TRACK_CELL_BOUNDS.size.z * 0.5 / TRACK_CELLS_PER_METRE
+	var cells := delta * TRACK_CELLS_PER_METRE
+	_track_surface.advance(
+		(_track_command.x - _track_command.y * half_width) * cells,
+		(_track_command.x + _track_command.y * half_width) * cells
+	)
 
 
 func _camera_aim_point(camera: Camera3D, delta: float) -> Vector3:

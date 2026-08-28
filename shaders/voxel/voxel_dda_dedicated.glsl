@@ -42,6 +42,9 @@ struct ShapeData {
 	vec4 dimensions_voxel_size;
 	vec4 macro_origin_padding;
 	vec4 macro_dimensions_padding;
+	vec4 surface_animation;
+	vec4 surface_bounds_min;
+	vec4 surface_bounds_max;
 };
 
 layout(set = 0, binding = 4, std430) readonly buffer BVHNodes {
@@ -270,6 +273,73 @@ vec3 entry_normal(vec3 point, vec3 direction, vec3 volume_size) {
 }
 
 
+// Fase del eslabón dentro del bucle de la oruga, en [0,1), o -1.0 si la celda no es banda animada.
+// El decoder guarda las celdas como (largo, alto, lateral): el perfil vive en XY y Z solo dice qué
+// oruga es. El desenrollado va por dirección desde el centro del perfil, no por "el borde más cercano
+// de la caja": en morro y culata el anillo es una curva y allí ninguna celda está cerca de un borde
+// recto, así que el criterio anterior saltaba de tramo y el patrón parecía correr de lado.
+float surface_link_phase(ShapeData shape, uint material, vec3 cell) {
+	vec4 animation = shape.surface_animation;
+	if (animation.w < 0.5 || material != uint(round(animation.z))) return -1.0;
+	vec3 track_min = shape.surface_bounds_min.xyz;
+	vec3 track_max = shape.surface_bounds_max.xyz;
+	if (any(lessThan(cell, track_min)) || any(greaterThanEqual(cell, track_max))) return -1.0;
+	// Longitud de arco sobre el octógono del perfil. Un mapeo por dirección desde el centro sería más
+	// corto, pero estira los eslabones en morro y culata: allí el borde está lejos del centro y el
+	// mismo tramo de parámetro cubre el doble de celdas. Con arco real el paso es uniforme en toda la
+	// vuelta.
+	vec2 extent = (track_max.xy - track_min.xy) * 0.5 - 0.5;
+	float chamfer = shape.surface_bounds_max.w;
+	vec2 p = cell.xy - (track_min.xy + track_max.xy) * 0.5;
+	vec2 a = abs(p);
+	float flat_x = 2.0 * (extent.x - chamfer);
+	float flat_y = 2.0 * (extent.y - chamfer);
+	float diagonal = chamfer * 1.41421356;
+	float perimeter = 2.0 * (flat_x + flat_y) + 4.0 * diagonal;
+	float s;
+	if (a.x + a.y - (extent.x + extent.y - chamfer) >= max(a.x - extent.x, a.y - extent.y)) {
+		if (p.x > 0.0 && p.y < 0.0) s = flat_x + (p.x - (extent.x - chamfer)) * 1.41421356;
+		else if (p.x > 0.0) s = flat_x + diagonal + flat_y + (extent.x - p.x) * 1.41421356;
+		else if (p.y > 0.0) s = 2.0 * flat_x + 2.0 * diagonal + flat_y
+			+ (-(extent.x - chamfer) - p.x) * 1.41421356;
+		else s = 2.0 * flat_x + 3.0 * diagonal + 2.0 * flat_y + (p.x + extent.x) * 1.41421356;
+	} else if (a.x - extent.x >= a.y - extent.y) {
+		s = p.x > 0.0
+			? flat_x + diagonal + (p.y + (extent.y - chamfer))
+			: 2.0 * flat_x + 3.0 * diagonal + flat_y + ((extent.y - chamfer) - p.y);
+	} else {
+		s = p.y < 0.0
+			? p.x + (extent.x - chamfer)
+			: flat_x + 2.0 * diagonal + flat_y + ((extent.x - chamfer) - p.x);
+	}
+	// El perímetro rara vez es múltiplo exacto del paso del eslabón. Redondear el número de eslabones
+	// y repartirlos sobre el perímetro cierra el bucle sin junta partida.
+	float links = max(round(perimeter / max(shape.surface_bounds_min.w, 1.0)), 1.0);
+	float offset = cell.z < (track_min.z + track_max.z) * 0.5 ? animation.x : animation.y;
+	return fract((s + offset) / perimeter * links);
+}
+
+
+// Solo la capa exterior del anillo puede vaciarse: por dentro está hueco, y quitar las dos celdas del
+// grosor abriría un agujero que se ve al otro lado del tanque. El perfil de la banda es un octágono
+// (extremos achaflanados a 45°), así que su distancia con signo sale de tres semiplanos.
+bool surface_link_outer_shell(ShapeData shape, vec3 cell) {
+	vec3 track_min = shape.surface_bounds_min.xyz;
+	vec3 track_max = shape.surface_bounds_max.xyz;
+	vec2 extent = (track_max.xy - track_min.xy) * 0.5 - 0.5;
+	vec2 d = abs(cell.xy - (track_min.xy + track_max.xy) * 0.5);
+	float chamfer = shape.surface_bounds_max.w;
+	return max(
+		max(d.x - extent.x, d.y - extent.y),
+		d.x + d.y - (extent.x + extent.y - chamfer)
+	) > -0.5;
+}
+
+
+// Fracción del paso ocupada por el eslabón: el resto es el hueco que se vacía y viaja con la banda.
+const float SURFACE_LINK_DUTY = 0.75;
+
+
 bool trace_shape(
 	int shape_index,
 	vec3 ray_origin_world,
@@ -279,6 +349,8 @@ bool trace_shape(
 	out vec3 hit_normal_world,
 	out uint material_index,
 	out int palette_row,
+	out vec3 hit_cell,
+	out vec3 hit_normal_local_out,
 	out int steps_taken
 ) {
 	ShapeData shape = shapes[shape_index];
@@ -315,6 +387,8 @@ bool trace_shape(
 	vec3 side_t = (next_boundary - ray_origin) / safe_direction;
 	vec3 hit_normal_local = entry_normal(entry_point, local_direction, dimensions);
 	material_index = 0u;
+	hit_cell = vec3(0.0);
+	hit_normal_local_out = vec3(0.0);
 	steps_taken = 0;
 	int max_steps = int(params.render_options.x);
 	// El brick solo cambia cada ocho celdas: se recuerda para no releer la tabla en cada paso.
@@ -370,6 +444,15 @@ bool trace_shape(
 			) * 8;
 		}
 		material_index = texelFetch(voxel_texture, brick_origin + (cell & ivec3(7)), 0).r;
+		// Los eslabones se vacían de verdad en lugar de pintarse encima: la fase decide qué celdas de
+		// la capa exterior faltan, así que el hueco viaja con la banda y la oruga tiene relieve. Es
+		// geometría de render, no del volumen: la física y la destrucción no se enteran.
+		vec3 link_cell = vec3(cell) + vec3(0.5);
+		if (material_index != 0u
+			&& surface_link_phase(shape, material_index, link_cell) > SURFACE_LINK_DUTY
+			&& surface_link_outer_shell(shape, link_cell)) {
+			material_index = 0u;
+		}
 		if (material_index != 0u) {
 			float alpha = texelFetch(
 				palette_texture, ivec2(int(material_index), palette_row), 0
@@ -378,6 +461,8 @@ bool trace_shape(
 			if (is_glass == glass_pass) {
 				hit_world_t = current_t * voxel_size;
 				hit_normal_world = normalize(mat3(shape.local_to_world) * hit_normal_local);
+				hit_cell = vec3(cell) + vec3(0.5);
+				hit_normal_local_out = hit_normal_local;
 				return true;
 			}
 			// The other material class is transparent to this pass; advance to the next cell.
@@ -436,6 +521,9 @@ void main() {
 	vec3 best_normal = vec3(0.0);
 	uint best_material = 0u;
 	int best_palette_row = 0;
+	int best_shape_index = -1;
+	vec3 best_cell = vec3(0.0);
+	vec3 best_normal_local = vec3(0.0);
 	int best_steps = 0;
 	int stack[64];
 	int stack_size = 1;
@@ -459,6 +547,8 @@ void main() {
 			vec3 candidate_normal;
 			uint candidate_material;
 			int candidate_palette_row;
+			vec3 candidate_cell;
+			vec3 candidate_normal_local;
 			int candidate_steps;
 			if (trace_shape(
 				shape_index,
@@ -469,12 +559,17 @@ void main() {
 				candidate_normal,
 				candidate_material,
 				candidate_palette_row,
+				candidate_cell,
+				candidate_normal_local,
 				candidate_steps
 			) && candidate_t < best_t) {
 				best_t = candidate_t;
 				best_normal = candidate_normal;
 				best_material = candidate_material;
 				best_palette_row = candidate_palette_row;
+				best_shape_index = shape_index;
+				best_cell = candidate_cell;
+				best_normal_local = candidate_normal_local;
 				best_steps = candidate_steps;
 			}
 		} else if (stack_size <= 61) {
@@ -513,6 +608,17 @@ void main() {
 	// MagicaVoxel RGBA is authored in sRGB. The compositor target is HDR-linear; treating the
 	// palette bytes as linear was the reason imported maps looked pale and overexposed.
 	vec3 albedo = srgb_to_linear(material_color.rgb);
+	if (best_shape_index >= 0) {
+		float link_phase = surface_link_phase(shapes[best_shape_index], best_material, best_cell);
+		if (link_phase >= 0.0) {
+			// El hueco ya lo quita la travesía; aquí solo se oscurece el borde contiguo para que la
+			// ranura se lea con luz plana, y el fondo del hueco (capa interior) quede en sombra.
+			albedo *= mix(
+				0.45, 1.15,
+				smoothstep(0.0, 0.22, min(link_phase, SURFACE_LINK_DUTY - link_phase))
+			);
+		}
+	}
 	float roughness = clamp(material_properties.r, 0.02, 1.0);
 	float metallic = clamp(material_properties.g, 0.0, 1.0);
 	float emission = material_properties.b * 32.0;

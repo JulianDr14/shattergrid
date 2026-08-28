@@ -134,7 +134,7 @@ static func refit_entry(
 
 static func pack_entry(entry: Dictionary) -> PackedByteArray:
 	var shape_floats := PackedFloat32Array()
-	shape_floats.resize(48)
+	shape_floats.resize(60)
 	_pack_entry_into(shape_floats, 0, entry)
 	return shape_floats.to_byte_array()
 
@@ -160,9 +160,9 @@ static func _pack(entries: Array[Dictionary], nodes: Array[Dictionary]) -> Dicti
 		_pack_node_into(node_floats, node_index * 12, nodes[node_index])
 
 	var shape_floats := PackedFloat32Array()
-	shape_floats.resize(entries.size() * 48)
+	shape_floats.resize(entries.size() * 60)
 	for shape_index in entries.size():
-		_pack_entry_into(shape_floats, shape_index * 48, entries[shape_index])
+		_pack_entry_into(shape_floats, shape_index * 60, entries[shape_index])
 
 	return {
 		"node_bytes": node_floats.to_byte_array(),
@@ -215,6 +215,19 @@ static func _pack_entry_into(
 	_pack_vec4(target, base + 44, Vector4(
 		macro_dimensions.x, macro_dimensions.y, macro_dimensions.z,
 		float(entry.get("brick_table_base", 0))
+	))
+	var surface: Dictionary = entry.get("surface_animation", {})
+	var animation: Vector4 = surface.get("animation", Vector4.ZERO)
+	var bounds_min: Vector3 = surface.get("bounds_min", Vector3.ZERO)
+	var bounds_max: Vector3 = surface.get("bounds_max", Vector3.ZERO)
+	_pack_vec4(target, base + 48, animation)
+	_pack_vec4(target, base + 52, Vector4(
+		bounds_min.x, bounds_min.y, bounds_min.z,
+		float(surface.get("link_pitch", 0.0))
+	))
+	_pack_vec4(target, base + 56, Vector4(
+		bounds_max.x, bounds_max.y, bounds_max.z,
+		float(surface.get("profile_chamfer", 0.0))
 	))
 
 
