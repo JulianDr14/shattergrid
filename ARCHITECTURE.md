@@ -581,36 +581,36 @@ Comandos principales:
 
 ```bash
 godot --headless --path . --script res://tests/native/core_selftest.gd
-godot --headless --path . --script res://tests/teardown_palette_selftest.gd
-godot --headless --path . --script res://tests/teardown_architecture_selftest.gd
-godot --headless --path . --script res://tests/physics_budget_selftest.gd
-godot --headless --path . --script res://tests/composite_mass_selftest.gd
-godot --headless --path . --script res://tests/player_movement_selftest.gd
-godot --headless --path . --script res://tests/door_system_selftest.gd
-godot --headless --path . --script res://tests/grab_system_selftest.gd
-godot --headless --path . --script res://tests/joint_break_selftest.gd
-godot --headless --path . --script res://tests/rope_selftest.gd
-godot --headless --path . --script res://tests/cable_link_selftest.gd
-godot --headless --path . --script res://tests/water_system_selftest.gd
-godot --headless --path . --script res://tests/water_interaction_selftest.gd
-godot --headless --path . --script res://tests/voxel_impact_damage_selftest.gd
-godot --headless --path . --script res://tests/loose_shapes_selftest.gd
-godot --headless --path . --script res://tests/moving_shapes_selftest.gd
-godot --headless --path . --script res://tests/live_props_selftest.gd
-godot --headless --path . --script res://tests/unsupported_drop_selftest.gd
-godot --headless --path . --script res://tests/far_island_drop_selftest.gd
-godot --headless --path . --script res://tests/deferred_continuation_selftest.gd
-godot --headless --path . --script res://tests/collision_handoff_selftest.gd
-godot --headless --path . --script res://tests/tower_parts_probe.gd
-godot --path . --script res://tests/tower_parts_probe.gd -- --renderer
-godot --headless --path . --script res://tests/tower_contact_probe.gd
-godot --headless --path . --script res://tests/large_collapse_probe.gd
-godot --headless --path . --script res://tests/support_search_probe.gd
-godot --headless --path . --script res://tests/compiled_map_cache_probe.gd -- --rebuild-teardown-cache
-godot --headless --path . --script res://tests/compiled_map_cache_probe.gd
-godot --headless --path . --script res://tests/map_destruction_cpu_probe.gd
-godot --headless --path . --script res://tests/joint_census_probe.gd
-godot --path . res://tests/physics_burst_benchmark.tscn
+godot --headless --path . --script res://tests/selftest/teardown_palette_selftest.gd
+godot --headless --path . --script res://tests/selftest/teardown_architecture_selftest.gd
+godot --headless --path . --script res://tests/selftest/physics_budget_selftest.gd
+godot --headless --path . --script res://tests/selftest/composite_mass_selftest.gd
+godot --headless --path . --script res://tests/selftest/player_movement_selftest.gd
+godot --headless --path . --script res://tests/selftest/door_system_selftest.gd
+godot --headless --path . --script res://tests/selftest/grab_system_selftest.gd
+godot --headless --path . --script res://tests/selftest/joint_break_selftest.gd
+godot --headless --path . --script res://tests/selftest/rope_selftest.gd
+godot --headless --path . --script res://tests/selftest/cable_link_selftest.gd
+godot --headless --path . --script res://tests/selftest/water_system_selftest.gd
+godot --headless --path . --script res://tests/selftest/water_interaction_selftest.gd
+godot --headless --path . --script res://tests/selftest/voxel_impact_damage_selftest.gd
+godot --headless --path . --script res://tests/selftest/loose_shapes_selftest.gd
+godot --headless --path . --script res://tests/selftest/moving_shapes_selftest.gd
+godot --headless --path . --script res://tests/selftest/live_props_selftest.gd
+godot --headless --path . --script res://tests/selftest/unsupported_drop_selftest.gd
+godot --headless --path . --script res://tests/selftest/far_island_drop_selftest.gd
+godot --headless --path . --script res://tests/selftest/deferred_continuation_selftest.gd
+godot --headless --path . --script res://tests/selftest/collision_handoff_selftest.gd
+godot --headless --path . --script res://tests/probes/tower_parts_probe.gd
+godot --path . --script res://tests/probes/tower_parts_probe.gd -- --renderer
+godot --headless --path . --script res://tests/probes/tower_contact_probe.gd
+godot --headless --path . --script res://tests/probes/large_collapse_probe.gd
+godot --headless --path . --script res://tests/probes/support_search_probe.gd
+godot --headless --path . --script res://tests/probes/compiled_map_cache_probe.gd -- --rebuild-teardown-cache
+godot --headless --path . --script res://tests/probes/compiled_map_cache_probe.gd
+godot --headless --path . --script res://tests/probes/map_destruction_cpu_probe.gd
+godot --headless --path . --script res://tests/probes/joint_census_probe.gd
+godot --path . res://tests/benchmarks/physics_burst_benchmark.tscn
 godot --path . res://prototype/dedicated_dda_prototype.tscn -- --benchmark
 godot --path . res://main.tscn -- --benchmark-main
 godot --path . res://main.tscn -- --benchmark-walk

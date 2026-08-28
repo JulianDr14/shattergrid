@@ -39,10 +39,10 @@ compile_commands.json
 /scenes/car.gd.uid
 /scenes/word.gd
 /scenes/word.gd.uid
-/tests/suspension_probe.gd
-/tests/suspension_probe.gd.uid
-/tests/word_perf_probe.gd
-/tests/word_perf_probe.gd.uid
+/tests/probes/suspension_probe.gd
+/tests/probes/suspension_probe.gd.uid
+/tests/benchmarks/word_perf_probe.gd
+/tests/benchmarks/word_perf_probe.gd.uid
 /tests/word_perf_probe.tscn
 
 # Editor, operating-system and diagnostic files

@@ -89,9 +89,9 @@ Las regresiones autocontenidas no necesitan datos externos:
 
 ```bash
 godot --headless --path . --script res://tests/native/core_selftest.gd
-godot --headless --path . --script res://tests/teardown_architecture_selftest.gd
-godot --headless --path . --script res://tests/physics_budget_selftest.gd
-godot --headless --path . --script res://tests/water_system_selftest.gd
+godot --headless --path . --script res://tests/selftest/teardown_architecture_selftest.gd
+godot --headless --path . --script res://tests/selftest/physics_budget_selftest.gd
+godot --headless --path . --script res://tests/selftest/water_system_selftest.gd
 ```
 
 Las sondas cuyos nombres empiezan por `map_`, además de los censos de Lee y las pruebas completas
