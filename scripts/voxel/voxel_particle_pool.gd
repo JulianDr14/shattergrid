@@ -14,6 +14,9 @@ const MAX_IMPACT_SPARKS := 32
 const SMOKE_VOXEL_SIZE := 0.1
 const DUST_CAPACITY := 3072
 const SPARK_CAPACITY := 768
+const MUZZLE_FLASH_TIME := 0.14
+const FIRE_PUFF_CAPACITY := 512
+const SMOKE_PUFF_CAPACITY := 1024
 
 var last_impact_particles := 0
 var total_emitted := 0
@@ -31,6 +34,11 @@ var _buffer_dirty := false
 var _cursor := 0
 var _dust: GPUParticles3D
 var _sparks: GPUParticles3D
+var _fire: GPUParticles3D
+var _smoke: GPUParticles3D
+var _flash: OmniLight3D
+var _flash_life := 0.0
+var _flash_energy := 0.0
 var _gpu_expiry_batches: Array[Dictionary] = []
 var _rng := RandomNumberGenerator.new()
 
@@ -44,6 +52,15 @@ func _ready() -> void:
 	_sparks = _create_spark_particles()
 	_sparks.name = "ImpactSparks"
 	add_child(_sparks)
+	_fire = _create_puff_particles(FIRE_PUFF_CAPACITY, 0.5, 2.6, 0.7, _fire_ramp())
+	_fire.name = "MuzzleFire"
+	add_child(_fire)
+	_smoke = _create_puff_particles(SMOKE_PUFF_CAPACITY, 1.15, 0.0, 2.1, _smoke_ramp())
+	_smoke.name = "MuzzleSmoke"
+	add_child(_smoke)
+	_flash = _create_flash_light()
+	_flash.name = "MuzzleFlash"
+	add_child(_flash)
 	set_process(false)
 
 
@@ -218,14 +235,19 @@ func _emit_dust(
 	var velocity := outward * _rng.randf_range(0.25, 1.2) \
 		+ Vector3.UP * _rng.randf_range(0.6, 1.8 + intensity * 0.035) \
 		+ _random_unit() * 0.35
-	# Nace en la rejilla de 10 cm, como cualquier voxel del mapa. Después la turbulencia lo saca de
-	# ella, pero el primer frame de la bocanada es una nube alineada con lo que se acaba de romper.
-	var spawn := (world_position + Vector3(
+	var spawn := world_position + Vector3(
 		_rng.randfn(0.0, 0.17), _rng.randfn(0.0, 0.13), _rng.randfn(0.0, 0.17)
-	)).snapped(Vector3.ONE * SMOKE_VOXEL_SIZE)
+	)
+	_emit_smoke(spawn, velocity, dust_color)
+
+
+## Emisión cruda de un cubo de humo. Nace en la rejilla de 10 cm, como cualquier voxel del mapa.
+## Después la turbulencia lo saca de ella, pero el primer frame de la bocanada es una nube alineada
+## con lo que se acaba de romper.
+func _emit_smoke(world_position: Vector3, velocity: Vector3, color: Color) -> void:
 	_dust.emit_particle(
-		Transform3D(Basis.IDENTITY, spawn),
-		velocity, dust_color, Color(0, 0, 0, 0),
+		Transform3D(Basis.IDENTITY, world_position.snapped(Vector3.ONE * SMOKE_VOXEL_SIZE)),
+		velocity, color, Color(0, 0, 0, 0),
 		GPUParticles3D.EMIT_FLAG_POSITION | GPUParticles3D.EMIT_FLAG_ROTATION_SCALE \
 			| GPUParticles3D.EMIT_FLAG_VELOCITY | GPUParticles3D.EMIT_FLAG_COLOR
 	)
@@ -241,6 +263,243 @@ func _emit_spark(
 		GPUParticles3D.EMIT_FLAG_POSITION | GPUParticles3D.EMIT_FLAG_VELOCITY \
 			| GPUParticles3D.EMIT_FLAG_COLOR
 	)
+
+
+## Boca de fuego de un cañón. Las cuatro etapas que se distinguen en cualquier vídeo a cámara lenta:
+## el destello incandescente en el ánima, la bola de fuego secundaria (el propelente que sale sin
+## quemar y se reenciende al encontrar el oxígeno del aire), el humo -que es esa bola ya fría- y la
+## cortina que la onda de boca levanta del suelo.
+##
+## Todo son puffs, no cubos: pocos, grandes y solapados. Cubos pequeños y separados no se leen como
+## una masa de gas, se leen como bichos volando, porque el ojo cuenta las siluetas duras una a una.
+##
+## `power` escala calibre: 1.0 es un cañón de carro de combate.
+func emit_muzzle_blast(
+	origin: Vector3, direction: Vector3, power := 1.0, ground_y := -INF
+) -> void:
+	if _fire == null:
+		return
+	var forward := direction.normalized() if direction.length_squared() > 0.0001 else Vector3.FORWARD
+	var side := forward.cross(Vector3.UP)
+	if side.length_squared() < 0.0001:
+		side = forward.cross(Vector3.RIGHT)
+	side = side.normalized()
+	var up := side.cross(forward).normalized()
+	var scale := clampf(power, 0.2, 3.0)
+
+	_flash.global_position = origin + forward * 1.6 * scale
+	_flash_energy = 70.0 * scale
+	_flash.light_energy = _flash_energy
+	_flash.omni_range = 34.0 * scale
+	_flash.visible = true
+	_flash_life = MUZZLE_FLASH_TIME
+
+	# Bola de fuego: cónica y sesgada hacia adelante, y frenando con la distancia al bocacho para que
+	# el frente se abra en hongo en vez de viajar como un bloque. Los puffs del núcleo son los
+	# gordos; hacia el borde adelgazan.
+	var fire_count := ceili(96.0 * scale)
+	for index in fire_count:
+		var along := _rng.randf() * _rng.randf()
+		var spread := (side * _rng.randfn(0.0, 1.0) + up * _rng.randfn(0.0, 1.0)) \
+			* (0.35 + along * 1.5) * scale
+		var heat := _rng.randf()
+		var color := Color(1.0, 0.96, 0.80).lerp(Color(1.0, 0.45, 0.07), heat)
+		color.a = _rng.randf_range(0.85, 1.0)
+		_emit_puff(
+			_fire, origin + forward * (along * 5.0 * scale) + spread,
+			forward * lerpf(34.0, 7.0, along) * scale + spread * 2.4,
+			color, lerpf(3.4, 1.3, along) * scale
+		)
+
+	# Anillo de choque, perpendicular al ánima: es la firma de un calibre grande frente a un fusil,
+	# que no lo tiene.
+	var ring_count := ceili(26.0 * scale)
+	for index in ring_count:
+		var angle := TAU * float(index) / float(ring_count) + _rng.randf_range(-0.14, 0.14)
+		var radial := (side * cos(angle) + up * sin(angle)).normalized()
+		_emit_puff(
+			_fire, origin + forward * (0.4 * scale) + radial * (0.8 * scale),
+			radial * _rng.randf_range(10.0, 17.0) * scale
+				+ forward * _rng.randf_range(2.0, 6.0) * scale,
+			Color(1.0, 0.72, 0.30, 0.9), 1.6 * scale
+		)
+
+	# Humo. No es un chorro que frena: el gas se enrolla en el labio del bocacho y forma un anillo de
+	# vórtice que se lleva el momento del disparo y se va girando hacia adelante mientras se abre.
+	# Eso se emite directamente en las velocidades -un toro girando sobre su propio tubo- porque
+	# `ParticleProcessMaterial` no tiene campo de vórtice.
+	var ring_radius := 1.1 * scale
+	var tube_radius := 0.8 * scale
+	var smoke_count := ceili(96.0 * scale)
+	for index in smoke_count:
+		var angle := TAU * _rng.randf()
+		var radial := (side * cos(angle) + up * sin(angle)).normalized()
+		var phase := TAU * _rng.randf()
+		var depth := _rng.randf() * tube_radius
+		# Punto dentro del tubo del anillo y velocidad de giro alrededor de su núcleo. El sentido es
+		# el de un anillo de humo: por fuera va hacia atrás y por dentro hacia adelante.
+		var offset := radial * cos(phase) * depth + forward * sin(phase) * depth
+		var roll := (radial * sin(phase) - forward * cos(phase)) * (depth * 7.0)
+		_emit_puff(
+			_smoke,
+			origin + forward * (1.2 * scale) + radial * ring_radius + offset,
+			roll + forward * _rng.randf_range(7.0, 12.0) * scale
+				+ radial * _rng.randf_range(1.5, 3.5) * scale
+				+ Vector3.UP * _rng.randf_range(0.0, 1.0),
+			_smoke_color(_rng.randf_range(0.24, 0.42)), lerpf(2.0, 4.0, _rng.randf()) * scale
+		)
+
+	# Cola: el gas que sale detrás del anillo y se queda colgando del ánima. Va mucho más lento, así
+	# que se deshace donde nació en vez de acompañar al anillo.
+	var trail_count := ceili(64.0 * scale)
+	for index in trail_count:
+		var along := _rng.randf()
+		var spread := (side * _rng.randfn(0.0, 1.0) + up * _rng.randfn(0.0, 1.0)) \
+			* (0.4 + along * 1.2) * scale
+		_emit_puff(
+			_smoke, origin + forward * (along * 3.5 * scale) + spread,
+			forward * lerpf(6.0, 0.8, along) * scale + spread * 0.9
+				+ Vector3.UP * _rng.randf_range(0.3, 1.4),
+			_smoke_color(_rng.randf_range(0.18, 0.34)), lerpf(1.8, 3.4, along) * scale
+		)
+	smoke_count += trail_count
+
+	var kicked := _kick_ground_dust(origin, forward, side, scale, ground_y)
+	_track_gpu_batch(smoke_count + kicked, 0)
+	_gpu_expiry_batches.append({
+		"count": fire_count + ring_count, "expires": Time.get_ticks_msec() + 700,
+	})
+	set_process(true)
+
+
+## La onda de boca barre el suelo delante del carro y levanta una cortina de polvo más ancha que la
+## propia llamarada. Sin ella el disparo pasa por encima del mundo sin tocarlo.
+## ponytail: `ground_y` lo da quien dispara (el fondo de su casco, que está apoyado). Vale mientras
+## se dispare desde suelo llano; si hace falta polvo en pendiente, aquí va un raycast.
+func _kick_ground_dust(
+	origin: Vector3, forward: Vector3, side: Vector3, scale: float, ground_y: float
+) -> int:
+	if ground_y == -INF or origin.y - ground_y > 6.0 * scale:
+		return 0
+	var flat := Vector3(forward.x, 0.0, forward.z)
+	if flat.length_squared() < 0.0001:
+		return 0
+	flat = flat.normalized()
+	var count := ceili(80.0 * scale)
+	for index in count:
+		var along := _rng.randf()
+		var spawn := origin + flat * (1.5 + along * 9.0) * scale \
+			+ side * _rng.randfn(0.0, 1.6) * scale
+		spawn.y = ground_y + _rng.randf_range(0.2, 0.8) * scale
+		var color := Color(0.56, 0.48, 0.36).lerp(Color(0.33, 0.27, 0.20), _rng.randf())
+		color.a = _rng.randf_range(0.18, 0.34)
+		_emit_puff(
+			_smoke, spawn,
+			flat * lerpf(9.0, 1.0, along) * scale + side * _rng.randfn(0.0, 1.8)
+				+ Vector3.UP * _rng.randf_range(0.8, 3.0),
+			color, lerpf(2.5, 6.0, along) * scale
+		)
+	return count
+
+
+func _smoke_color(alpha: float) -> Color:
+	var color := Color(0.62, 0.59, 0.55).lerp(Color(0.24, 0.21, 0.19), _rng.randf())
+	color.a = alpha
+	return color
+
+
+func _emit_puff(
+	emitter: GPUParticles3D, world_position: Vector3, velocity: Vector3, color: Color, size: float
+) -> void:
+	emitter.emit_particle(
+		Transform3D(Basis.IDENTITY.scaled(Vector3.ONE * maxf(size, 0.2)), world_position),
+		velocity, color, Color(0, 0, 0, 0),
+		GPUParticles3D.EMIT_FLAG_POSITION | GPUParticles3D.EMIT_FLAG_ROTATION_SCALE \
+			| GPUParticles3D.EMIT_FLAG_VELOCITY | GPUParticles3D.EMIT_FLAG_COLOR
+	)
+
+
+## Emisor de bocanadas. La malla es un quad de 1 m: el shader lo encara a la cámara y le pone normal
+## esférica, así que la escala que se emite es el diámetro del puff en metros.
+##
+## Lo que impide que la nube parezca un enjambre no es el shader sino el frenado: `damping` alto para
+## que los puffs se paren juntos donde los dejó la onda, y turbulencia floja, porque turbulencia
+## fuerte es exactamente lo que hace que cada partícula se vaya por su lado revoloteando.
+func _create_puff_particles(
+	capacity: int, life: float, emissive: float, edge_softness: float, ramp: Gradient
+) -> GPUParticles3D:
+	var particles := GPUParticles3D.new()
+	particles.amount = capacity
+	particles.lifetime = life
+	particles.local_coords = false
+	particles.emitting = false
+	particles.fixed_fps = 30
+	particles.draw_order = GPUParticles3D.DRAW_ORDER_VIEW_DEPTH
+	particles.visibility_aabb = AABB(Vector3.ONE * -140.0, Vector3.ONE * 280.0)
+	var process := ParticleProcessMaterial.new()
+	process.gravity = Vector3(0.0, 1.4 if emissive > 0.0 else 0.9, 0.0)
+	# `damping` en Godot es lineal: resta velocidad hasta el cero exacto. Con un valor alto e igual
+	# para todos, la nube avanzaba y se paraba en seco toda a la vez, como contra una pared. Ahora es
+	# flojo y muy repartido: cada puff afloja a su ritmo y se deshace antes de llegar a pararse.
+	process.damping_min = 0.4
+	process.damping_max = 2.6
+	process.turbulence_enabled = true
+	process.turbulence_noise_strength = 1.1
+	process.turbulence_noise_scale = 1.2
+	process.turbulence_influence_min = 0.04
+	process.turbulence_influence_max = 0.18
+	var ramp_texture := GradientTexture1D.new()
+	ramp_texture.gradient = ramp
+	process.color_ramp = ramp_texture
+	particles.process_material = process
+	var quad := QuadMesh.new()
+	quad.size = Vector2.ONE
+	var material := ShaderMaterial.new()
+	material.shader = load("res://shaders/voxel/smoke_puff.gdshader")
+	material.set_shader_parameter("emissive", emissive)
+	material.set_shader_parameter("edge_softness", edge_softness)
+	# El fuego no se deshila: se apaga. La erosión es cosa del humo.
+	material.set_shader_parameter("erosion", 0.2 if emissive > 0.0 else 0.85)
+	material.set_shader_parameter("bump_strength", 0.5 if emissive > 0.0 else 1.8)
+	quad.material = material
+	particles.draw_pass_1 = quad
+	return particles
+
+
+func _fire_ramp() -> Gradient:
+	# Curva de enfriamiento del gas: blanco, amarillo, naranja, rojo sucio y ya humo.
+	var ramp := Gradient.new()
+	ramp.offsets = PackedFloat32Array([0.0, 0.14, 0.38, 0.66, 1.0])
+	ramp.colors = PackedColorArray([
+		Color(1.0, 1.0, 0.95, 1.0), Color(1.0, 0.85, 0.40, 1.0),
+		Color(1.0, 0.45, 0.09, 0.9), Color(0.55, 0.20, 0.06, 0.45),
+		Color(0.22, 0.19, 0.17, 0.0),
+	])
+	return ramp
+
+
+func _smoke_ramp() -> Gradient:
+	# Sube de golpe -la bocanada aparece, no crece- y se va deshaciendo desde el primer tercio. Antes
+	# aguantaba media opacidad hasta el final y el humo se quedaba colgado delante del carro.
+	var ramp := Gradient.new()
+	ramp.offsets = PackedFloat32Array([0.0, 0.06, 0.3, 1.0])
+	ramp.colors = PackedColorArray([
+		Color(1.0, 1.0, 1.0, 0.0), Color(1.0, 1.0, 1.0, 1.0),
+		Color(0.95, 0.95, 0.95, 0.42), Color(0.88, 0.88, 0.88, 0.0),
+	])
+	return ramp
+
+
+## Un fogonazo emisivo sin luz solo se pinta a sí mismo: el casco y el suelo de delante se quedan
+## igual de oscuros y el disparo no pesa. Es una sola luz, encendida menos de una décima.
+func _create_flash_light() -> OmniLight3D:
+	var light := OmniLight3D.new()
+	light.light_color = Color(1.0, 0.72, 0.36)
+	light.light_energy = 0.0
+	light.omni_range = 16.0
+	light.shadow_enabled = false
+	light.visible = false
+	return light
 
 
 ## El humo eran quads billboard con una textura gaussiana y `SHADING_MODE_UNSHADED`: manchas de
@@ -366,12 +625,20 @@ func _process(delta: float) -> void:
 		_write_chip_buffer(slot, _bases[slot], _positions[slot], color)
 		active_index -= 1
 
+	if _flash_life > 0.0:
+		_flash_life -= delta
+		# Cae al cuadrado: un fogonazo no se atenúa, se corta.
+		var remaining := clampf(_flash_life / MUZZLE_FLASH_TIME, 0.0, 1.0)
+		_flash.light_energy = _flash_energy * remaining * remaining
+		_flash.visible = _flash_life > 0.0
+
 	var now := Time.get_ticks_msec()
 	for index in range(_gpu_expiry_batches.size() - 1, -1, -1):
 		if now >= int(_gpu_expiry_batches[index].expires):
 			_gpu_expiry_batches.remove_at(index)
 	_flush_chip_buffer()
-	set_process(not _active_slots.is_empty() or not _gpu_expiry_batches.is_empty())
+	set_process(not _active_slots.is_empty() or not _gpu_expiry_batches.is_empty()
+		or _flash_life > 0.0)
 
 
 func _hide_chip(slot: int) -> void:

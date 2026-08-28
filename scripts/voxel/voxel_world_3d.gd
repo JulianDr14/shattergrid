@@ -131,6 +131,15 @@ const MOTION_CONTACT_COOLDOWN_MSEC := 220
 const MOTION_SCAN_INTERVAL := 1.0 / 30.0
 
 
+## Fogonazo de boca. Vive en el mundo y no en el arma porque el pool de partículas es del mundo:
+## un cañón no necesita su propio emisor ni su propia luz.
+func emit_muzzle_blast(
+	origin: Vector3, direction: Vector3, power := 1.0, ground_y := -INF
+) -> void:
+	if _particle_pool != null and impact_particles_enabled:
+		_particle_pool.emit_muzzle_blast(origin, direction, power, ground_y)
+
+
 func _ready() -> void:
 	add_to_group(GROUP)
 	ensure_physics_budget()

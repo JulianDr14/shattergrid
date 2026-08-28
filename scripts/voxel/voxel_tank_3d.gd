@@ -103,6 +103,17 @@ const PITCH_MAX_IMPULSE := 90000.0
 ## corona con `MOTOR_SIGN`. Afecta al motor y a los topes por igual, así que ambos se niegan aquí.
 const PITCH_MOTOR_SIGN := -1.0
 
+## Cadencia. Un carro real tarda más en recargar, pero de momento el disparo solo saca el fogonazo y
+## esperar seis segundos para volver a verlo no ayuda a nadie.
+const FIRE_COOLDOWN := 1.2
+## Culatazo. El impulso real de un cañón de 120 mm sobre 60 toneladas mueve el carro veinte
+## centímetros por segundo: correcto y absolutamente invisible. Esto está exagerado a propósito, y se
+## aplica a la altura del bocacho para que el carro se encabrite sobre la suspensión en vez de
+## limitarse a deslizarse hacia atrás, que es lo que se lee como potencia.
+const RECOIL_IMPULSE := 45000.0
+## El propio cañón retrocede aparte: el motor de los muñones lo devuelve solo a su elevación.
+const BARREL_RECOIL_IMPULSE := 9000.0
+
 var target_yaw := 0.0
 var target_pitch := 0.0
 var hull: VoxelBody3D
@@ -121,6 +132,7 @@ var _track_surface: VoxelSurfaceAnimation
 ## Avance (m/s) y giro (rad/s) que ha pedido el conductor, con las mismas rampas que la tracción.
 ## La banda se anima con esto y no con la velocidad del casco.
 var _track_command := Vector2.ZERO
+var _fire_cooldown := 0.0
 
 
 ## Crea el tanque y toda su infraestructura dentro de `world`. La escena principal solo decide dónde
@@ -413,6 +425,11 @@ func _process(delta: float) -> void:
 		return
 	if vehicle == null or not is_instance_valid(vehicle) or not vehicle.has_driver():
 		return
+	# El disparo se lee aquí y no en `Player`: dentro de un vehículo el jugador ignora "fire" a
+	# propósito, y quien sabe dónde está el bocacho es el tanque.
+	_fire_cooldown = maxf(0.0, _fire_cooldown - delta)
+	if Input.is_action_just_pressed("fire"):
+		fire()
 	var camera := _gunner.get("camera") as Camera3D
 	if camera == null or not is_instance_valid(camera):
 		return
@@ -435,6 +452,59 @@ func _physics_process(delta: float) -> void:
 		hull.wake_for_interaction()
 		turret.wake_for_interaction()
 	_aim_barrel()
+
+
+## Dispara: por ahora solo el fogonazo de boca. Devuelve `false` si el cañón sigue recargando.
+func fire() -> bool:
+	if _fire_cooldown > 0.0 or barrel == null or not is_instance_valid(barrel):
+		return false
+	var world := hull.get_parent() as VoxelWorld3D if is_instance_valid(hull) else null
+	if world == null:
+		return false
+	var muzzle := muzzle_transform()
+	var forward := -muzzle.basis.z
+	# El suelo: el fondo del casco está apoyado en él, así que no hace falta un raycast para saber a
+	# qué altura levantar el polvo.
+	world.emit_muzzle_blast(
+		muzzle.origin, forward, 1.0, hull.get_shapes()[0].world_bounds().position.y
+	)
+	_apply_recoil(forward, muzzle.origin)
+	_fire_cooldown = FIRE_COOLDOWN
+	return true
+
+
+func _apply_recoil(forward: Vector3, muzzle_origin: Vector3) -> void:
+	var hull_physics := hull.get_physics_body()
+	if hull_physics != null:
+		hull.wake_for_interaction()
+		hull_physics.apply_impulse(
+			-forward * RECOIL_IMPULSE, muzzle_origin - hull_physics.global_position
+		)
+	var barrel_physics := barrel.get_physics_body()
+	if barrel_physics != null:
+		barrel.wake_for_interaction()
+		barrel_physics.apply_impulse(
+			-forward * BARREL_RECOIL_IMPULSE, muzzle_origin - barrel_physics.global_position
+		)
+
+
+## Bocacho del cañón, mirando por el ánima según el convenio de Godot (`-basis.z` hacia adelante).
+func muzzle_transform() -> Transform3D:
+	if barrel == null or not is_instance_valid(barrel):
+		return Transform3D.IDENTITY
+	var shape := barrel.get_shapes()[0]
+	var bounds := shape.local_bounds()
+	var center := shape.global_transform * bounds.get_center()
+	# El ánima se cortó por el eje x del modelo, pero el signo depende de cómo quedase orientada la
+	# torreta: el bocacho es sin más el extremo que se aleja de ella.
+	var half := shape.global_basis.x * (bounds.size.x * 0.5)
+	if is_instance_valid(turret) and (center - turret.get_shapes()[0].world_bounds().get_center()) \
+			.dot(half) < 0.0:
+		half = -half
+	var forward := half.normalized()
+	# Medio metro por delante del bocacho: nacido justo en la boca, el primer frame de la llamarada
+	# se queda medio metido dentro del propio cañón.
+	return Transform3D(Basis.looking_at(forward, Vector3.UP), center + half + forward * 0.5)
 
 
 ## Sigue `target_pitch` con el motor de los muñones. El cañón vive fuera del casco, así que hay que
