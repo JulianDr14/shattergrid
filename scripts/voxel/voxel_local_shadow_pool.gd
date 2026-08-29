@@ -24,25 +24,6 @@ func setup(voxel_world: VoxelWorld3D, camera: Camera3D) -> void:
 	_world.voxels_changed.connect(_on_voxels_changed)
 
 
-func has_voxel_shadow(light: Light3D) -> bool:
-	return _slots.has(light.get_instance_id())
-
-
-func get_active_volumes() -> Array[Dictionary]:
-	var result: Array[Dictionary] = []
-	for key in _active_keys:
-		if not _slots.has(key):
-			continue
-		var slot: Dictionary = _slots[key]
-		result.append({
-			"light": slot.light,
-			"texture": (slot.texture as VoxelAtlas3D).get_rd_rid(),
-			"cell_size": slot.cell_size,
-			"center": (slot.light as Light3D).global_position,
-		})
-	return result
-
-
 func get_shader_metadata() -> PackedFloat32Array:
 	var metadata := PackedFloat32Array()
 	metadata.resize(MAX_LIGHTS * 16 + 4)

@@ -140,6 +140,14 @@ func emit_muzzle_blast(
 		_particle_pool.emit_muzzle_blast(origin, direction, power, ground_y)
 
 
+## Bola de fuego. Va aparte de `damage_sphere` a propósito: el corte de voxel es la parte física
+## de una explosión y esta es la óptica. Una carga que revienta en el aire, sin nada que romper,
+## tiene que verse igual.
+func emit_explosion(center: Vector3, radius: float) -> void:
+	if _particle_pool != null and impact_particles_enabled:
+		_particle_pool.emit_explosion(center, radius)
+
+
 func _ready() -> void:
 	add_to_group(GROUP)
 	ensure_physics_budget()

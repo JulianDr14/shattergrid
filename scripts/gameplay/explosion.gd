@@ -11,3 +11,7 @@ static func at(node: Node, center: Vector3, radius: float, energy: float) -> voi
 	for world: VoxelWorld3D in worlds:
 		# El humo es exclusivo de la explosión: `VoxelParticlePool` lo decide por esta causa.
 		world.damage_sphere(center, radius, energy, {"cause": "explosion"})
+	# La bola de fuego se emite una sola vez aunque el reparto toque varios mundos: el pool de
+	# partículas es por mundo, pero la explosión que ve el jugador es una.
+	if not worlds.is_empty():
+		(worlds[0] as VoxelWorld3D).emit_explosion(center, radius)

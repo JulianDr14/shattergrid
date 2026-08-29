@@ -476,7 +476,12 @@ func _physics_process(delta: float) -> void:
 	_aim_barrel()
 
 
-## Dispara: por ahora solo el fogonazo de boca. Devuelve `false` si el cañón sigue recargando.
+## Munición cargada. Una sola ficha por ahora; el día que haya HE o HEAT esto es lo que cambia
+## el selector del artillero, no el código del disparo.
+const AMMO_KIND := "ap"
+
+
+## Dispara: fogonazo, culatazo y proyectil. Devuelve `false` si el cañón sigue recargando.
 func fire() -> bool:
 	if _fire_cooldown > 0.0 or barrel == null or not is_instance_valid(barrel):
 		return false
@@ -491,8 +496,26 @@ func fire() -> bool:
 		muzzle.origin, forward, 1.0, hull.get_shapes()[0].world_bounds().position.y
 	)
 	_apply_recoil(forward, muzzle.origin)
+	Projectile.spawn(world, muzzle, AMMO_KIND, _own_collision_rids(), _hull_velocity())
 	_fire_cooldown = FIRE_COOLDOWN
 	return true
+
+
+## Todo lo que es el propio carro. El bocacho está a medio metro del cañón, dentro de la envolvente
+## de la torreta: sin esta lista el primer rayo del proyectil impacta en el que dispara.
+func _own_collision_rids() -> Array[RID]:
+	var rids: Array[RID] = []
+	for part: VoxelBody3D in [hull, turret, barrel]:
+		if part != null and is_instance_valid(part):
+			rids.append_array(part.get_collision_rids())
+	return rids
+
+
+## Velocidad del arma, que el proyectil hereda. Disparar en marcha desvía el tiro tanto como en la
+## realidad, y es gratis: ya la lleva el casco.
+func _hull_velocity() -> Vector3:
+	var hull_physics := hull.get_physics_body() as RigidBody3D if is_instance_valid(hull) else null
+	return hull_physics.linear_velocity if hull_physics != null else Vector3.ZERO
 
 
 func _apply_recoil(forward: Vector3, muzzle_origin: Vector3) -> void:

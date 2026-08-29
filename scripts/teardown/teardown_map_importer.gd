@@ -1014,10 +1014,6 @@ static func classify_door_joint_records(records: Array[Dictionary], body_bounds:
 	return VoxelMapImportPlanner.new().classify_door_joint_records(records, body_bounds)
 
 
-static func _joint_record_position(record: Dictionary) -> Vector3:
-	return (record.get("transform", Transform3D.IDENTITY) as Transform3D).origin
-
-
 func _make_joint(attributes: Dictionary) -> Joint3D:
 	var limits := _planner.parse_vec3(attributes.get("limits", "0 0 0"))
 	match attributes.get("type", "ball"):
@@ -1149,18 +1145,6 @@ static func _body_mean_inertia(body: VoxelBody3D) -> float:
 ## +Z. Se corrige girando el nodo, no la geometría.
 static func _slider_basis(basis: Basis) -> Basis:
 	return basis * Basis(Quaternion(Vector3.UP, deg_to_rad(-90.0)))
-
-
-static func _rotation(text: String) -> Quaternion:
-	return VoxelMapImportPlanner.new().parse_rotation(text)
-
-
-static func _vec3(text: String) -> Vector3:
-	return VoxelMapImportPlanner.new().parse_vec3(text)
-
-
-static func _float_values(text: String, count: int) -> PackedFloat32Array:
-	return VoxelMapImportPlanner.new().parse_float_values(text, count)
 
 
 func _palette_for(path: String) -> VoxelPalette:

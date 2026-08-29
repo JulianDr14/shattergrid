@@ -281,11 +281,6 @@ static func _distance_to_segment(point_value: Vector3, a: Vector3, b: Vector3) -
 	return point_value.distance_to(a + segment * fraction)
 
 
-## Conservado como punto de prueba, pero el bucle ya se ejecuta íntegramente en C++.
-func _simulate(delta: float) -> void:
-	_solver.simulate(delta)
-
-
 func force_all_awake_for_probe(previous_offset := Vector3.ZERO) -> void:
 	_solver.force_all_awake(previous_offset)
 

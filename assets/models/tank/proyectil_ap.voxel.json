@@ -1,0 +1,10 @@
+{
+  "scale": 1,
+  "anchored": false,
+  "materials": {
+    "200": {"hardness": 1000000.0, "density": 18000.0, "metallic": 0.9, "roughness": 0.3},
+    "201": {"hardness": 1000000.0, "density": 18000.0, "metallic": 0.85, "roughness": 0.4},
+    "202": {"hardness": 1000000.0, "density": 8000.0, "metallic": 0.7, "roughness": 0.55},
+    "203": {"hardness": 1000000.0, "density": 2000.0, "metallic": 0.0, "roughness": 1.0, "emission": 4.0}
+  }
+}

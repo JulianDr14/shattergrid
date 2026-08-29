@@ -144,13 +144,6 @@ func _reference(group: Dictionary, origin: Vector3i, cell_size: float) -> Packed
 	return target
 
 
-func _count_bits(bytes: PackedByteArray) -> int:
-	var total := 0
-	for value in bytes:
-		total += _popcount(value)
-	return total
-
-
 func _popcount(value: int) -> int:
 	var total := 0
 	while value != 0:

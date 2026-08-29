@@ -98,10 +98,6 @@ func set_tracked_actor(actor: Node3D) -> void:
 		_barrier_mesh.visible = false
 
 
-func get_boundary_points() -> PackedVector2Array:
-	return _points.duplicate()
-
-
 func get_collision_segment_count() -> int:
 	return 0 if _collision_body == null else _collision_body.get_child_count()
 
@@ -117,11 +113,6 @@ func get_reveal_point() -> Vector3:
 func contains_world_point(point: Vector3) -> bool:
 	var local := to_local(point)
 	return Geometry2D.is_point_in_polygon(Vector2(local.x, local.z), _points)
-
-
-func closest_boundary_point(point: Vector3) -> Dictionary:
-	var local := to_local(point)
-	return _closest_point(Vector2(local.x, local.z))
 
 
 func _process(delta: float) -> void:

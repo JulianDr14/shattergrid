@@ -446,10 +446,6 @@ func get_total_area() -> float:
 	return _total_area
 
 
-func get_smallest_surface_center() -> Vector3:
-	return get_smallest_surface_bounds().get_center()
-
-
 func get_smallest_surface_bounds() -> AABB:
 	var best_area := INF
 	var best_bounds := AABB()

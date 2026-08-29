@@ -332,10 +332,6 @@ func get_seat_position() -> Vector3:
 	return to_global(_seat_local)
 
 
-func get_exit_position() -> Vector3:
-	return get_exit_candidates()[0]
-
-
 func get_exit_candidates() -> PackedVector3Array:
 	var right := Vector3(global_basis.x.x, 0.0, global_basis.x.z)
 	if right.length_squared() < 0.01:

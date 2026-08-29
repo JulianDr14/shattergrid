@@ -7,7 +7,6 @@ const DEFAULT_TEARDOWN_MAP := DEFAULT_TEARDOWN_ROOT + "/main.xml"
 ## Disposición usada durante desarrollo: ambos repositorios viven como carpetas hermanas dentro de
 ## `Documents/Godot`. Se globaliza porque `res://..` queda fuera del árbol de recursos del proyecto.
 const DEVELOPMENT_TEARDOWN_MAP := "res://../teardown_maps/lee/main.xml"
-const DEFAULT_TEARDOWN_VOX_DIR := DEFAULT_TEARDOWN_ROOT + "/vox/"
 const TEARDOWN_MAP_ENV := "SHATTERGRID_MAP"
 
 

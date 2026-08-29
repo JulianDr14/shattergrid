@@ -557,20 +557,6 @@ func _update_grab_line() -> void:
 	_grab_line.visible = true
 
 
-## Compatibilidad con probes antiguos que nombraban la interacción como si solo sirviera a puertas.
-func _begin_door_grab() -> void:
-	_begin_grab()
-
-
-func _end_door_grab() -> void:
-	_end_grab()
-
-
-func _pick_door() -> Dictionary:
-	var pick := _pick_grabbable()
-	return pick if not pick.is_empty() and pick.get("door") != null else {}
-
-
 func _update_interaction_hint() -> void:
 	if interaction_label == null:
 		return

@@ -95,13 +95,6 @@ func release_voxel_shape(shape: VoxelShape3D) -> void:
 		_physics_body.remove_child(shape)
 
 
-func remove_voxel_shape(shape: VoxelShape3D) -> void:
-	if shape.get_parent() == _physics_body:
-		_physics_body.remove_child(shape)
-	shape.queue_free()
-	rebuild_all_collision()
-
-
 func get_shapes() -> Array[VoxelShape3D]:
 	var result: Array[VoxelShape3D] = []
 	if _physics_body == null:

@@ -39,6 +39,9 @@ var _smoke: GPUParticles3D
 var _flash: OmniLight3D
 var _flash_life := 0.0
 var _flash_energy := 0.0
+## Duración del destello vivo. La boca de fuego se corta en una décima; una explosión aguanta el
+## doble largo porque lo que ilumina no es el fogonazo sino la bola de fuego que viene detrás.
+var _flash_time := MUZZLE_FLASH_TIME
 var _gpu_expiry_batches: Array[Dictionary] = []
 var _rng := RandomNumberGenerator.new()
 
@@ -292,6 +295,7 @@ func emit_muzzle_blast(
 	_flash.light_energy = _flash_energy
 	_flash.omni_range = 34.0 * scale
 	_flash.visible = true
+	_flash_time = MUZZLE_FLASH_TIME
 	_flash_life = MUZZLE_FLASH_TIME
 
 	# Bola de fuego: cónica y sesgada hacia adelante, y frenando con la distancia al bocacho para que
@@ -369,6 +373,103 @@ func emit_muzzle_blast(
 	_gpu_expiry_batches.append({
 		"count": fire_count + ring_count, "expires": Time.get_ticks_msec() + 700,
 	})
+	set_process(true)
+
+
+## Explosión. Las cinco capas que se distinguen en cualquier referencia a cámara lenta, y en este
+## orden porque es el orden en que las ve el ojo: el destello —lo más brillante y lo más corto—, el
+## núcleo incandescente que casi no se mueve, la bola de fuego que se abre y se enfría, el anillo de
+## la onda de choque a ras de suelo y la columna de humo, que es la única que dura.
+##
+## No hay escombros aquí: los cascotes de verdad, con el color del material que se ha roto, los
+## emite `emit_damage` con las muestras que devuelve el corte. Esto es solo el gas.
+##
+## `radius` es el de la carga en metros; el tamaño de todo sale de él, así que una granada de mano y
+## un depósito de combustible no comparten efecto reescalado a ojo.
+func emit_explosion(center: Vector3, radius: float) -> void:
+	if _fire == null:
+		return
+	var scale := clampf(radius / 3.0, 0.35, 3.0)
+
+	# El destello. Una explosión sin luz solo se pinta a sí misma: la habitación de al lado se
+	# queda igual de oscura y el estallido no pesa nada.
+	_flash.global_position = center
+	_flash_energy = 110.0 * scale
+	_flash.light_energy = _flash_energy
+	_flash.light_color = Color(1.0, 0.78, 0.45)
+	_flash.omni_range = 30.0 * scale
+	_flash.visible = true
+	_flash_time = 0.3
+	_flash_life = _flash_time
+
+	# Núcleo: blanco, denso y casi quieto. Es lo que da la sensación de que ahí dentro hay una
+	# temperatura, en vez de una nube naranja que se expande y ya.
+	var fire_count := ceili(26.0 * scale)
+	for index in fire_count:
+		var offset := _random_unit() * _rng.randf() * radius * 0.4
+		_emit_puff(
+			_fire, center + offset, offset * _rng.randf_range(3.0, 6.0),
+			Color(1.0, 0.97, 0.86, _rng.randf_range(0.9, 1.0)),
+			radius * _rng.randf_range(0.5, 0.85)
+		)
+
+	# Bola de fuego: se abre en todas direcciones pero pesa hacia arriba, porque el gas caliente
+	# flota desde el primer instante. Cuanto más lejos del centro nace, más frío es el color.
+	var shell_count := ceili(54.0 * scale)
+	for index in shell_count:
+		var outward := (_random_unit() + Vector3.UP * 0.45).normalized()
+		var along := _rng.randf_range(0.45, 1.0)
+		var heat := along * _rng.randf_range(0.6, 1.0)
+		var color := Color(1.0, 0.90, 0.62).lerp(Color(1.0, 0.36, 0.06), heat)
+		color.a = _rng.randf_range(0.8, 1.0)
+		_emit_puff(
+			_fire, center + outward * radius * along,
+			outward * radius * _rng.randf_range(6.0, 11.0) + Vector3.UP * 2.0,
+			color, radius * lerpf(0.65, 0.4, along)
+		)
+	fire_count += shell_count
+
+	# Anillo de choque: horizontal, muy rápido y muy poco opaco. Es polvo barrido, no fuego, y es
+	# lo que da la escala —sin él una explosión grande y una pequeña se parecen demasiado.
+	var ring_count := ceili(22.0 * scale)
+	var smoke_count := ring_count
+	for index in ring_count:
+		var angle := TAU * float(index) / float(ring_count) + _rng.randf_range(-0.16, 0.16)
+		var radial := Vector3(cos(angle), 0.0, sin(angle))
+		var color := Color(0.72, 0.66, 0.58, _rng.randf_range(0.16, 0.3))
+		_emit_puff(
+			_smoke, center + radial * radius * 0.8 + Vector3.DOWN * radius * 0.25,
+			radial * radius * _rng.randf_range(12.0, 18.0) + Vector3.UP * _rng.randf_range(0.5, 2.0),
+			color, radius * _rng.randf_range(0.4, 0.7)
+		)
+
+	# Columna: el humo es la bola de fuego ya fría, así que nace donde estaba el fuego y sube. Es
+	# la capa que queda en pantalla cuando todo lo demás se ha apagado.
+	var plume_count := ceili(64.0 * scale)
+	for index in plume_count:
+		var outward := (_random_unit() + Vector3.UP * 0.7).normalized()
+		var along := _rng.randf()
+		_emit_puff(
+			_smoke, center + outward * radius * along * 1.1,
+			outward * radius * _rng.randf_range(1.5, 3.5)
+				+ Vector3.UP * _rng.randf_range(2.0, 7.0),
+			_smoke_color(_rng.randf_range(0.28, 0.5)),
+			radius * lerpf(0.7, 1.25, along)
+		)
+	smoke_count += plume_count
+
+	# Chispas: metal y brasas que salen por delante del gas y caen con su propia parábola. Baratas
+	# y son la mitad de la lectura de "esto ha reventado".
+	var spark_count := ceili(44.0 * scale)
+	for index in spark_count:
+		var outward := (_random_unit() + Vector3.UP * 0.3).normalized()
+		_emit_spark(
+			center + outward * radius * 0.5, outward,
+			Color(1.0, 0.72, 0.32), 60.0 * scale
+		)
+
+	_track_gpu_batch(smoke_count, spark_count)
+	_gpu_expiry_batches.append({"count": fire_count, "expires": Time.get_ticks_msec() + 700})
 	set_process(true)
 
 
@@ -628,7 +729,7 @@ func _process(delta: float) -> void:
 	if _flash_life > 0.0:
 		_flash_life -= delta
 		# Cae al cuadrado: un fogonazo no se atenúa, se corta.
-		var remaining := clampf(_flash_life / MUZZLE_FLASH_TIME, 0.0, 1.0)
+		var remaining := clampf(_flash_life / _flash_time, 0.0, 1.0)
 		_flash.light_energy = _flash_energy * remaining * remaining
 		_flash.visible = _flash_life > 0.0
 
