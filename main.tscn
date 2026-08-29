@@ -4,6 +4,7 @@
 [ext_resource type="Script" path="res://scripts/voxel/voxel_world_3d.gd" id="2_world"]
 [ext_resource type="Script" path="res://scripts/core/player.gd" id="3_player"]
 [ext_resource type="Script" path="res://scripts/core/pause_menu.gd" id="4_pause"]
+[ext_resource type="Script" path="res://scripts/core/game_hud.gd" id="5_hud"]
 
 [sub_resource type="ProceduralSkyMaterial" id="Sky_1"]
 sky_horizon_color = Color(0.64625, 0.65575, 0.67075, 1)
@@ -179,6 +180,7 @@ fov = 90.0
 far = 400.0
 
 [node name="HUD" type="CanvasLayer" parent="."]
+script = ExtResource("5_hud")
 
 [node name="Crosshair" type="Label" parent="HUD"]
 anchors_preset = 8
