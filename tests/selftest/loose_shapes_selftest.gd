@@ -1,21 +1,7 @@
-extends SceneTree
+extends "res://tests/selftest/selftest.gd"
 ## Un `<body dynamic>` de Teardown puede traer varias Shapes en un solo cuerpo rigido. Si el disparo
 ## se lleva la del medio, las de los extremos ya no se tocan y tienen que separarse en cuerpos
 ## distintos. Sin esto se quedan soldadas, flotando en formacion con el hueco en medio.
-
-var failures := 0
-
-
-func _init() -> void:
-	_run.call_deferred()
-
-
-func _check(condition: bool, message: String) -> void:
-	if condition:
-		print("  ok   ", message)
-	else:
-		failures += 1
-		printerr("  FALLO ", message)
 
 
 func _add_section(body: VoxelBody3D, origin: Vector3) -> VoxelShape3D:
@@ -36,10 +22,7 @@ func _add_section(body: VoxelBody3D, origin: Vector3) -> VoxelShape3D:
 
 func _run() -> void:
 	print("cuerpos con varias Shapes")
-	var world := VoxelWorld3D.new()
-	world.show_diagnostics = false
-	world.physics_budget = VoxelPhysicsBudget.new()
-	root.add_child(world)
+	var world := make_world()
 
 	# Tres tramos de tuberia pegados, un solo cuerpo rigido, como los importa el mapa.
 	var pipe := VoxelBody3D.new()

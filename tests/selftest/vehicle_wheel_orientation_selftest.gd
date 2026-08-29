@@ -1,23 +1,9 @@
-extends SceneTree
+extends "res://tests/selftest/selftest.gd"
 ## Regresion de los dos coches del estacionamiento: la primera sincronizacion no puede girar las
 ## caras detalladas de las ruedas hacia el interior y convertirlas visualmente en huecos negros.
 
 var MAP := VoxelProjectPaths.teardown_map_path()
 const PARKING_CENTER := Vector3(3.0, 0.0, -55.8)
-
-var failures := 0
-
-
-func _init() -> void:
-	_run.call_deferred()
-
-
-func _check(condition: bool, message: String) -> void:
-	if condition:
-		print("  ok   ", message)
-	else:
-		failures += 1
-		printerr("  FALLO ", message)
 
 
 func _run() -> void:
@@ -25,9 +11,7 @@ func _run() -> void:
 		print("VOXEL_VEHICLE_WHEEL_ORIENTATION_SKIP falta copia local de Lee")
 		quit()
 		return
-	var world := VoxelWorld3D.new()
-	world.show_diagnostics = false
-	root.add_child(world)
+	var world := make_world(false)
 	TeardownMapImporter.import_map(world, MAP, PARKING_CENTER, 8.0, Vector3.ZERO, false)
 	var vehicles := get_nodes_in_group(VoxelVehicle3D.GROUP)
 	_check(vehicles.size() == 2, "se importan la camioneta roja y el familiar azul")

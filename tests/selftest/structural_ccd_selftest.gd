@@ -1,30 +1,10 @@
-extends SceneTree
+extends "res://tests/selftest/selftest.gd"
 ## Un poste estructural rápido no debe cruzar una chapa/apoyo delgado entre dos physics ticks.
-
-var failures := 0
-
-
-func _init() -> void:
-	_run.call_deferred()
-
-
-func _check(condition: bool, message: String) -> void:
-	if condition:
-		print("  ok   ", message)
-	else:
-		failures += 1
-		printerr("  FALLO ", message)
 
 
 func _run() -> void:
 	print("CCD de postes y fragmentos estructurales")
-	var support := StaticBody3D.new()
-	var support_collision := CollisionShape3D.new()
-	var support_box := BoxShape3D.new()
-	support_box.size = Vector3(8.0, 0.04, 8.0)
-	support_collision.shape = support_box
-	support.add_child(support_collision)
-	root.add_child(support)
+	make_box_body(root, Vector3(8.0, 0.04, 8.0))
 
 	var world := VoxelWorld3D.new()
 	world.show_diagnostics = false

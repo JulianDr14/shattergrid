@@ -1,20 +1,6 @@
-extends SceneTree
+extends "res://tests/selftest/selftest.gd"
 ## Los cables tienen que comportarse como cables: colgar por su peso, mantener su longitud, y sobre
 ## todo dormirse. Lo caro de simular 79 tendidos es hacerlo cuando no se mueve ninguno.
-
-var failures := 0
-
-
-func _init() -> void:
-	_run.call_deferred()
-
-
-func _check(condition: bool, message: String) -> void:
-	if condition:
-		print("  ok   ", message)
-	else:
-		failures += 1
-		printerr("  FALLO ", message)
 
 
 func _run() -> void:

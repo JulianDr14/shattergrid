@@ -1,4 +1,4 @@
-extends SceneTree
+extends "res://tests/selftest/selftest.gd"
 ## Lo que ya no llega al cimiento cae; lo que llega, no. Es el modelo de Teardown: no hay analisis
 ## de tensiones, solo alcance INDIRECTO hasta algo que no se puede caer.
 ##
@@ -8,20 +8,10 @@ extends SceneTree
 ##
 ## El caso decisivo es la cadena de tubos: cada seccion toca a sus vecinas, asi que preguntar solo
 ## "toco algo?" las daba por apoyadas a todas. Hace falta seguir la cadena hasta el suelo.
-
-var failures := 0
-
-
-func _init() -> void:
-	_run.call_deferred()
-
-
-func _check(condition: bool, message: String) -> void:
-	if condition:
-		print("  ok   ", message)
-	else:
-		failures += 1
-		printerr("  FALLO ", message)
+##
+## El ultimo escenario es la isla LEJOS del crater: `_split_disconnected` solo evaluaba las
+## componentes cercanas al impacto, asi que el trozo de pared sin uniones se quedaba soldado al aire
+## para siempre.
 
 
 func _slab(world: VoxelWorld3D, position: Vector3, size: Vector3i,
@@ -44,12 +34,48 @@ func _slab(world: VoxelWorld3D, position: Vector3, size: Vector3i,
 	return body
 
 
+## El fragmento nace en el origen y la altura vive en la Shape, no en el nodo.
+static func _body_height(body: VoxelBody3D) -> float:
+	var shapes := body.get_shapes()
+	return shapes[0].world_bounds().get_center().y if not shapes.is_empty() else 0.0
+
+
+## Un muro con su base de roca en un extremo y un tramo suelto de ladrillo en el otro, sin nada en
+## medio: dos componentes desde el primer frame, separadas mucho mas que el radio del disparo.
+func _island_wall(world: VoxelWorld3D) -> VoxelShape3D:
+	var shape := VoxelShape3D.new()
+	shape.data = VoxelShapeData.new()
+	var dimensions := Vector3i(40, 8, 4)
+	var cells := PackedByteArray()
+	cells.resize(dimensions.x * dimensions.y * dimensions.z)
+	for z in dimensions.z:
+		for y in dimensions.y:
+			for x in dimensions.x:
+				var material := 0
+				if x < 4:
+					material = 2 if y < 3 else 1
+				elif x >= 30:
+					material = 1
+				cells[x + y * dimensions.x + z * dimensions.x * dimensions.y] = material
+	shape.data.set_cells(dimensions, cells)
+	shape.palette = VoxelPalette.new()
+	shape.palette.set_material(1, {"color": Color.RED, "hardness": 0.4, "density": 400.0})
+	shape.palette.set_material(2, {
+		"color": Color.GRAY, "hardness": VoxelWorld3D.FOUNDATION_HARDNESS, "density": 2400.0,
+	})
+	shape.anchored = false
+	shape.transform = Transform3D(Basis.IDENTITY, Vector3(0.0, 6.0, 0.0))
+	var body := VoxelBody3D.new()
+	body.state = VoxelBody3D.State.STATIC
+	world.add_child(body)
+	body.add_voxel_shape(shape)
+	world.register_body(body)
+	return shape
+
+
 func _run() -> void:
 	print("caida de lo que no toca nada")
-	var world := VoxelWorld3D.new()
-	world.show_diagnostics = false
-	world.physics_budget = VoxelPhysicsBudget.new()
-	root.add_child(world)
+	var world := make_world()
 
 	# Suelo de roca: el cimiento. Dureza 1e6 es lo que trae `rock` en la paleta de Teardown.
 	var ground := _slab(world, Vector3(0.0, 0.0, 0.0), Vector3i(60, 4, 60), 1000000.0)
@@ -85,10 +111,7 @@ func _run() -> void:
 
 	# La cadena de tubos: seis secciones seguidas que se tocan. La primera se apoya en el suelo, asi
 	# que la cadena entera esta sostenida; si se corta el enlace, el resto tiene que caer.
-	var world2 := VoxelWorld3D.new()
-	world2.show_diagnostics = false
-	world2.physics_budget = VoxelPhysicsBudget.new()
-	root.add_child(world2)
+	var world2 := make_world()
 	# Un pilar de roca de 4,4 m y una tuberia en voladizo: solo la primera seccion toca el pilar, las
 	# otras cinco cuelgan en el aire y solo llegan al suelo por la cadena.
 	_slab(world2, Vector3(0.0, 0.0, 0.0), Vector3i(6, 44, 6), 1000000.0)
@@ -133,10 +156,7 @@ func _run() -> void:
 	# dos Shapes, y construirla al reves da un resultado correcto cerca del origen y basura lejos: en
 	# Lee, una torre de 24 m a 70 m del centro no "tocaba" el suelo que tenia debajo ni con dos metros
 	# de margen, asi que ninguna prueba montada alrededor del origen lo habria visto.
-	var world3 := VoxelWorld3D.new()
-	world3.show_diagnostics = false
-	world3.physics_budget = VoxelPhysicsBudget.new()
-	root.add_child(world3)
+	var world3 := make_world()
 	var far := Vector3(-3.9, 0.0, 70.9)
 	_slab(world3, far, Vector3i(20, 20, 20), 1000000.0)
 	var mast := _slab(world3, far + Vector3(0.0, 2.05, 0.0), Vector3i(4, 20, 4))
@@ -153,10 +173,7 @@ func _run() -> void:
 	# Poste unificado y no anclado explícitamente, como los importados. La parte superior es mayor
 	# que la base: conservar "la componente más grande" dejaba arriba estático y soltaba precisamente
 	# el pie que aún tocaba el mundo. La raíz externa debe decidirlo al revés.
-	var world_post := VoxelWorld3D.new()
-	world_post.show_diagnostics = false
-	world_post.physics_budget = VoxelPhysicsBudget.new()
-	root.add_child(world_post)
+	var world_post := make_world()
 	_slab(world_post, Vector3.ZERO, Vector3i(20, 4, 20), 1000000.0)
 	var post := _slab(world_post, Vector3(0.0, 0.8, 0.0), Vector3i(1, 12, 1))
 	var post_shape := post.get_shapes()[0]
@@ -179,10 +196,7 @@ func _run() -> void:
 
 	# Una Shape puede mezclar el material de raíz con la estructura que sostiene. Consultar una vez
 	# `es cimiento` y después destruir toda la roca no debe dejar esa respuesta cacheada para siempre.
-	var world_brick := VoxelWorld3D.new()
-	world_brick.show_diagnostics = false
-	world_brick.physics_budget = VoxelPhysicsBudget.new()
-	root.add_child(world_brick)
+	var world_brick := make_world()
 	var brick_body := VoxelBody3D.new()
 	world_brick.add_child(brick_body)
 	var brick_shape := VoxelShape3D.new()
@@ -219,10 +233,7 @@ func _run() -> void:
 	# Shape y la busqueda de cimiento corta en cuanto lo descubre, asi que el apoyo puede no tener
 	# entrada propia mientras la viga si lo tiene en la suya: le haces el boquete y la viga sigue
 	# creyendose apoyada hasta que otro impacto cualquiera le tira la cache.
-	var world4 := VoxelWorld3D.new()
-	world4.show_diagnostics = false
-	world4.physics_budget = VoxelPhysicsBudget.new()
-	root.add_child(world4)
+	var world4 := make_world()
 	_slab(world4, Vector3(0.0, 0.0, 0.0), Vector3i(40, 10, 40), 1000000.0)
 	var column := _slab(world4, Vector3(0.0, 1.05, 0.0), Vector3i(4, 20, 4))
 	var beam := _slab(world4, Vector3(0.0, 2.25, 0.0), Vector3i(30, 4, 4))
@@ -261,10 +272,7 @@ func _run() -> void:
 	# Más larga que el antiguo límite fail-open de 32 Shapes. Una búsqueda inconclusa no puede
 	# responder "soportado": la cadena entera carece de raíz y debe caer aunque el componente sea
 	# grande. Solo se explora esta isla nacida de la arista modificada, no el mapa completo.
-	var world5 := VoxelWorld3D.new()
-	world5.show_diagnostics = false
-	world5.physics_budget = VoxelPhysicsBudget.new()
-	root.add_child(world5)
+	var world5 := make_world()
 	var long_chain: Array[VoxelBody3D] = []
 	var long_chain_shapes: Array[VoxelShape3D] = []
 	for section in 40:
@@ -292,10 +300,7 @@ func _run() -> void:
 	# `ceil(CONTACT_MARGIN / voxel_size)` voxeles: con 0.12 sobre voxeles de 0.1 el alcance era DOS, o
 	# sea que una capa entera de aire entre las dos piezas seguia contando como union. Volar la union
 	# no soltaba nada porque nunca habia nada que soltar.
-	var world_fence := VoxelWorld3D.new()
-	world_fence.show_diagnostics = false
-	world_fence.physics_budget = VoxelPhysicsBudget.new()
-	root.add_child(world_fence)
+	var world_fence := make_world()
 	_slab(world_fence, Vector3.ZERO, Vector3i(20, 4, 20), 1000000.0)
 	_slab(world_fence, Vector3(0.0, 2.2, 0.0), Vector3i(4, 40, 4), 1000000.0)
 	# Barra de 3 m pegada a la cara del pilar, a 3 m del suelo: su unico camino al cimiento es el pilar.
@@ -317,6 +322,40 @@ func _run() -> void:
 	var fence_fallen := fence_height - fence_shape.world_bounds().get_center().y
 	print("  la reja bajo %.2f m" % fence_fallen)
 	_check(fence_fallen > 0.3, "cae de verdad, no solo de estado")
+
+	# Isla desconectada LEJOS del crater: el tramo suelto esta a 26 voxeles del disparo, muy fuera del
+	# alcance local que antes filtraba las componentes a reclasificar.
+	var world_island := make_world()
+	var wall := _island_wall(world_island)
+	world_island.finalize_spatial_index()
+	for _frame in 5:
+		await physics_frame
+	_check(world_island.get_dynamic_bodies().is_empty(), "el muro con isla entra entero como estatica")
+	# Se raspa la roca: quita cimiento, asi que la clasificacion se dispara seguro.
+	world_island.damage_sphere(wall.voxel_center_world(0), 0.15, 1.0e6)
+	for _frame in 30:
+		await physics_frame
+		world_island._process(1.0 / 60.0)
+	var islands := world_island.get_dynamic_bodies()
+	_check(not islands.is_empty(), "el tramo lejano al crater se desprende en su propio cuerpo")
+	_check(is_instance_valid(wall) and wall.voxel_count() > 0,
+		"y la base sobre la roca se queda donde estaba")
+	var island_heights: Array[float] = []
+	for body: VoxelBody3D in islands:
+		island_heights.append(_body_height(body))
+	for _frame in 90:
+		await physics_frame
+		world_island._process(1.0 / 60.0)
+	var fell := 0
+	for index in islands.size():
+		var body := islands[index]
+		if is_instance_valid(body) and island_heights[index] - _body_height(body) > 0.3:
+			fell += 1
+	_check(fell > 0, "la isla lejana cae de verdad, no se queda flotando")
+	var snapshot: Dictionary = world_island._runtime_registry.get_coherence_snapshot()
+	print("  isla lejana: %d cuerpos, coherencia %s" % [islands.size(), snapshot.get("status", "?")])
+	_check(String(snapshot.get("status", "")) != "DESYNC",
+		"ninguna Shape queda con colision desincronizada tras cambiar de cuerpo")
 
 	if failures == 0:
 		print("VOXEL_UNSUPPORTED_DROP_SELFTEST_OK")

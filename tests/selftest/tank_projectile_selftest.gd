@@ -1,4 +1,4 @@
-extends SceneTree
+extends "res://tests/selftest/selftest.gd"
 ## Proyectil del cañón: cae como debe, no atraviesa nada por ir rápido, y detona DETRÁS del
 ## blindaje en vez de en su cara.
 
@@ -8,40 +8,6 @@ class Gunner:
 	func _init() -> void:
 		camera = Camera3D.new()
 		add_child(camera)
-
-var failures := 0
-
-
-func _init() -> void:
-	_run.call_deferred()
-
-
-func _check(condition: bool, message: String) -> void:
-	if condition:
-		print("  ok   ", message)
-	else:
-		failures += 1
-		printerr("  FALLO ", message)
-
-
-func _make_world() -> VoxelWorld3D:
-	var world := VoxelWorld3D.new()
-	world.show_diagnostics = false
-	world.physics_budget = VoxelPhysicsBudget.new()
-	root.add_child(world)
-	return world
-
-
-func _make_wall(world: VoxelWorld3D, center: Vector3, thickness: float) -> StaticBody3D:
-	var wall := StaticBody3D.new()
-	var collision := CollisionShape3D.new()
-	var box := BoxShape3D.new()
-	box.size = Vector3(thickness, 8.0, 8.0)
-	collision.shape = box
-	wall.add_child(collision)
-	world.add_child(wall)
-	wall.global_position = center
-	return wall
 
 
 func _run() -> void:
@@ -55,7 +21,7 @@ func _run() -> void:
 ## Caída libre: sin nada que golpear, el proyectil describe una parábola. Se compara contra
 ## ½·g·t², que es la referencia analítica; el rozamiento solo puede restar, nunca sumar.
 func _test_ballistics() -> void:
-	var world := _make_world()
+	var world := make_world()
 	var start := Vector3(0.0, 50.0, 0.0)
 	var muzzle := Transform3D(Basis.looking_at(Vector3.RIGHT, Vector3.UP), start)
 	var shell := Projectile.spawn(world, muzzle)
@@ -138,10 +104,10 @@ func _slice_count(data: VoxelShapeData, z: int) -> int:
 ## Perforación: un muro de 40 cm a 30 m. A 420 m/s el proyectil recorre 7 m por paso de física, así
 ## que si el trazado no fuese por barrido lo atravesaría sin enterarse.
 func _test_penetration() -> void:
-	var world := _make_world()
+	var world := make_world()
 	var wall_x := 30.0
 	var thickness := 0.4
-	_make_wall(world, Vector3(wall_x, 50.0, 0.0), thickness)
+	make_box_body(world, Vector3(thickness, 8.0, 8.0), Vector3(wall_x, 50.0, 0.0))
 	var blasts: Array[Dictionary] = []
 	world.explosion_started.connect(
 		func(center: Vector3, radius: float, _energy: float) -> void:
@@ -176,15 +142,8 @@ func _test_penetration() -> void:
 ## Integración: el cañón del tanque suelta proyectil de verdad, y no se dispara a sí mismo pese a
 ## que el bocacho nace dentro de la envolvente de la torreta.
 func _test_tank_fires() -> void:
-	var world := _make_world()
-	var floor_body := StaticBody3D.new()
-	var floor_shape := CollisionShape3D.new()
-	var box := BoxShape3D.new()
-	box.size = Vector3(80, 1, 80)
-	floor_shape.shape = box
-	floor_shape.position = Vector3(0, -0.5, 0)
-	floor_body.add_child(floor_shape)
-	world.add_child(floor_body)
+	var world := make_world()
+	make_box_body(world, Vector3(80, 1, 80), Vector3(0, -0.5, 0))
 	var gunner := Gunner.new()
 	root.add_child(gunner)
 	var tank := VoxelTank3D.spawn(world, Vector3(0, 1.0, 0), gunner)

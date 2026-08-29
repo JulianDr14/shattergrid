@@ -3,6 +3,17 @@ extends SceneTree
 ## pase transparente. No necesita RenderingDevice; valida la topología y los registros CPU.
 
 
+
+var failures := 0
+
+
+## `assert` desaparece en las compilaciones de release: un test que solo afirma con asserts pasaria
+## siempre. El fallo se cuenta y sale por el codigo de salida.
+func _check(condition: bool, message := "") -> void:
+	if not condition:
+		failures += 1
+		printerr("  FALLO ", message)
+
 func _entry(dimensions: Vector3i, has_glass: bool) -> Dictionary:
 	return {
 		"transform": Transform3D.IDENTITY,
@@ -21,10 +32,10 @@ func _initialize() -> void:
 	var renderer := VoxelRenderSystem.new()
 	renderer._free_entry_indices = PackedInt32Array([3, 7])
 	renderer._entry_glass_capable = {3: false, 7: true}
-	assert(renderer._find_free_entry_offset(false) == 1,
+	_check(renderer._find_free_entry_offset(false) == 1,
 		"un opaco puede reutilizar cualquier hoja libre")
 	renderer._free_entry_indices = PackedInt32Array([7, 3])
-	assert(renderer._find_free_entry_offset(true) == 0,
+	_check(renderer._find_free_entry_offset(true) == 0,
 		"un vidrio no puede entrar en una hoja ausente del BVH transparente")
 
 	var placeholder := VoxelRenderSystem._placeholder_entry(1)
@@ -34,10 +45,10 @@ func _initialize() -> void:
 	var glass_entry := DedicatedVoxelDDAEffect._glass_entry_after_update(
 		placeholder, fragment, true
 	)
-	assert(glass_entry.dimensions == fragment.dimensions \
+	_check(glass_entry.dimensions == fragment.dimensions \
 		and glass_entry.atlas_origin == fragment.atlas_origin \
 		and int(glass_entry.brick_table_base) == 123,
 		"activar la reserva copia todos los metadatos al BVH transparente")
 	renderer.free()
 	print("VOXEL_RENDERER_ENTRY_REUSE_SELFTEST_OK")
-	quit()
+	quit(1 if failures > 0 else 0)

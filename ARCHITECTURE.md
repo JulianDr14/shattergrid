@@ -598,7 +598,6 @@ godot --headless --path . --script res://tests/selftest/loose_shapes_selftest.gd
 godot --headless --path . --script res://tests/selftest/moving_shapes_selftest.gd
 godot --headless --path . --script res://tests/selftest/live_props_selftest.gd
 godot --headless --path . --script res://tests/selftest/unsupported_drop_selftest.gd
-godot --headless --path . --script res://tests/selftest/far_island_drop_selftest.gd
 godot --headless --path . --script res://tests/selftest/deferred_continuation_selftest.gd
 godot --headless --path . --script res://tests/selftest/collision_handoff_selftest.gd
 godot --headless --path . --script res://tests/probes/tower_parts_probe.gd

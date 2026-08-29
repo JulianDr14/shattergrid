@@ -1,6 +1,11 @@
-extends SceneTree
+extends "res://tests/selftest/selftest.gd"
 ## Regresión completa del tanque: puntería en los dos ejes, control diferencial y corona bajo carga.
 ## La torreta no se desprende nunca, ni siquiera por explosión.
+##
+## El último escenario es la guiñada del casco: el motor de la corona manda velocidad relativa al
+## casco y `target_yaw` también es relativo, así que con la mira clavada en un punto del mundo el
+## objetivo se mueve a -omega mientras el casco gira a omega. Un proporcional puro sólo sigue eso
+## con un error permanente de omega/YAW_GAIN, y la torreta se veía girar con el cuerpo.
 
 
 class Gunner:
@@ -10,21 +15,6 @@ class Gunner:
 	func _init() -> void:
 		camera = Camera3D.new()
 		add_child(camera)
-
-
-var failures := 0
-
-
-func _init() -> void:
-	_run.call_deferred()
-
-
-func _check(condition: bool, message: String) -> void:
-	if condition:
-		print("  ok   ", message)
-	else:
-		failures += 1
-		printerr("  FALLO ", message)
 
 
 func _make_wood_wall(
@@ -64,21 +54,22 @@ func _discard_test_tank(world: VoxelWorld3D, tank: VoxelTank3D) -> void:
 			node.queue_free()
 
 
+## Rumbo absoluto en el mundo, con el mismo convenio que `VoxelTank3D._plane_yaw`.
+static func _turret_world_yaw(tank: VoxelTank3D) -> float:
+	var basis := tank.turret.get_physics_body().global_basis
+	return atan2(-basis.x.z, basis.x.x)
+
+
+static func _hull_world_yaw(tank: VoxelTank3D) -> float:
+	var basis := tank.hull_transform().basis
+	return atan2(-basis.x.z, basis.x.x)
+
+
 func _run() -> void:
 	print("torreta del tanque")
-	var world := VoxelWorld3D.new()
-	world.show_diagnostics = false
-	world.physics_budget = VoxelPhysicsBudget.new()
-	root.add_child(world)
+	var world := make_world()
 
-	var floor_body := StaticBody3D.new()
-	var floor_shape := CollisionShape3D.new()
-	var box := BoxShape3D.new()
-	box.size = Vector3(40, 1, 40)
-	floor_shape.shape = box
-	floor_shape.position = Vector3(0, -0.5, 0)
-	floor_body.add_child(floor_shape)
-	world.add_child(floor_body)
+	make_box_body(world, Vector3(40, 1, 40), Vector3(0, -0.5, 0))
 
 	var gunner := Gunner.new()
 	root.add_child(gunner)
@@ -232,22 +223,28 @@ func _run() -> void:
 	_check(rammer.vehicle.set_driver(rammer_driver), "se puede ocupar el tanque de ariete")
 	rammer.vehicle.set_control_override(true, 1.0, 0.0, false)
 	var crossed_wall := false
+	# `last_physics_impact` es un único hueco global: los cascotes del muro chocando entre sí lo
+	# sobrescriben con impactos `body` en cuanto la pared cede, así que el perfil del embiste hay que
+	# verlo cuando ocurre, no al final.
+	var vehicle_impact_seen := false
 	for _frame in 360:
 		await physics_frame
+		vehicle_impact_seen = vehicle_impact_seen \
+			or String(world.last_physics_impact.get("kind", "")) == "vehicle"
 		var beyond := (rammer.vehicle.global_position - wall_center).dot(crash_forward)
 		crossed_wall = crossed_wall or beyond > 0.5
 		if crossed_wall and (not is_instance_valid(wall_shape) \
 				or wall_shape.voxel_count() < wall_voxels):
 			break
 	var wall_after := wall_shape.voxel_count() if is_instance_valid(wall_shape) else 0
-	print("  muro: %d -> %d voxeles; tanque=%s; impacto=%s" % [
-		wall_voxels, wall_after, rammer.vehicle.global_position,
+	print("  muro: %d -> %d voxeles; casco: %d -> %d; tanque=%s; impacto=%s" % [
+		wall_voxels, wall_after, hull_voxels, rammer.hull.get_total_voxels(),
+		rammer.vehicle.global_position,
 		JSON.stringify(world.last_physics_impact),
 	])
 	_check(world.physics_impacts > impacts_before and wall_after < wall_voxels,
 		"el tanque abre un boquete mediante un contacto Jolt real")
-	_check(String(world.last_physics_impact.get("kind", "")) == "vehicle",
-		"el choque usa el perfil fuerte del tanque")
+	_check(vehicle_impact_seen, "el choque usa el perfil fuerte del tanque")
 	_check(rammer.hull.get_total_voxels() == hull_voxels,
 		"abrir el muro no perfora el propio casco")
 	_check(crossed_wall,
@@ -282,19 +279,59 @@ func _run() -> void:
 
 	# El pivote orbital solo hereda posicion y yaw: un casco balanceado no puede moverlo.
 	var level_pivot := VehicleCamera.pivot(
-		tank.vehicle.get_camera_pivot(Transform3D(Basis.IDENTITY, Vector3(3.0, 1.0, -2.0))), 1.55
+		explosive.vehicle.get_camera_pivot(Transform3D(Basis.IDENTITY, Vector3(3.0, 1.0, -2.0))), 1.55
 	)
-	var rolled_pivot := VehicleCamera.pivot(tank.vehicle.get_camera_pivot(
+	var rolled_pivot := VehicleCamera.pivot(explosive.vehicle.get_camera_pivot(
 		Transform3D(Basis(Vector3.BACK, 0.35), Vector3(3.0, 1.0, -2.0))
 	), 1.55)
 	_check(level_pivot.distance_to(rolled_pivot) < 0.001,
 		"el roll del casco mueve el pivote de camara")
-	var turned_pivot := VehicleCamera.pivot(tank.vehicle.get_camera_pivot(
+	var turned_pivot := VehicleCamera.pivot(explosive.vehicle.get_camera_pivot(
 		Transform3D(Basis(Vector3.UP, PI * 0.5), Vector3(3.0, 1.0, -2.0))
 	), 1.55)
-	_check(level_pivot.distance_to(turned_pivot) > 0.001 or tank.vehicle.get_camera_pivot(
-		Transform3D.IDENTITY
-	).is_equal_approx(Vector3.ZERO), "el yaw del casco si debe girar el pivote")
+	# El pivote es `origen + yaw * asiento_local`: solo se mueve con el yaw si el asiento tiene
+	# desplazamiento horizontal. El del tanque esta centrado (0, 1.4, 0), asi que ahi el yaw no debe
+	# cambiar nada; comparar el vector entero contra cero daba por bueno cualquier resultado.
+	var seat_offset := explosive.vehicle.get_camera_pivot(Transform3D.IDENTITY)
+	var seat_radius := Vector2(seat_offset.x, seat_offset.z).length()
+	_check(
+		(level_pivot.distance_to(turned_pivot) > 0.001) == (seat_radius > 0.001),
+		"el yaw del casco gira el pivote si y solo si el asiento esta descentrado"
+	)
+
+	# Girar el casco no puede arrastrar la torreta. El casco gira sobre su eje a 0,9 rad/s: por encima
+	# de lo que un proporcional puro sigue sin desfase, y por debajo del tope de compensación.
+	var yawing := VoxelTank3D.spawn(world, Vector3(-14.0, 1.0, 10.0))
+	if yawing != null:
+		var aim_point := Vector3(-14.0, 1.5, -50.0)
+		var yawing_body := yawing.hull.get_physics_body() as RigidBody3D
+		for _frame in 90:
+			await physics_frame
+		# La corona parte ya encarada al punto de mira: se mide la deriva mientras el casco gira, no
+		# el tiempo que tarda en apuntar.
+		for _frame in 120:
+			var hull_now := yawing.hull_transform()
+			yawing.target_yaw = VoxelTank3D.aim_yaw(aim_point - hull_now.origin, hull_now.basis)
+			await physics_frame
+		var settled_yaw := _turret_world_yaw(yawing)
+		var yaw_start := _hull_world_yaw(yawing)
+		var peak_drift := 0.0
+		for _frame in 150:
+			yawing_body.angular_velocity = Vector3(0.0, 0.9, 0.0)
+			var hull_now := yawing.hull_transform()
+			yawing.target_yaw = VoxelTank3D.aim_yaw(aim_point - hull_now.origin, hull_now.basis)
+			await physics_frame
+			peak_drift = maxf(peak_drift,
+				absf(wrapf(_turret_world_yaw(yawing) - settled_yaw, -PI, PI)))
+		var hull_turned := absf(wrapf(_hull_world_yaw(yawing) - yaw_start, -PI, PI))
+		print("  el casco giró %.1f grados · deriva máxima de la torreta %.1f grados" % [
+			rad_to_deg(hull_turned), rad_to_deg(peak_drift),
+		])
+		_check(hull_turned > 0.7, "el casco llegó a girar de verdad durante la prueba")
+		_check(peak_drift < deg_to_rad(4.0),
+			"la torreta se mantiene sobre el punto del mundo mientras gira el casco")
+		_discard_test_tank(world, yawing)
+		await physics_frame
 
 	print("fallos: %d" % failures)
 	quit(1 if failures > 0 else 0)

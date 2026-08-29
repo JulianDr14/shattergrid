@@ -1,36 +1,9 @@
-extends SceneTree
-
-var failures := 0
-
-
-func _init() -> void:
-	_run.call_deferred()
-
-
-func _check(condition: bool, message: String) -> void:
-	if condition:
-		print("  ok   ", message)
-	else:
-		failures += 1
-		printerr("  FALLO ", message)
-
-
-static func _box(parent: Node3D, position: Vector3, size: Vector3) -> void:
-	var body := StaticBody3D.new()
-	var collision := CollisionShape3D.new()
-	var shape := BoxShape3D.new()
-	shape.size = size
-	collision.shape = shape
-	body.add_child(collision)
-	parent.add_child(body)
-	body.position = position
-
-
+extends "res://tests/selftest/selftest.gd"
 func _run() -> void:
 	print("movimiento: recuperación, snap y escaleras")
 	var level := Node3D.new()
 	root.add_child(level)
-	_box(level, Vector3(0.0, -0.1, 0.0), Vector3(12.0, 0.2, 12.0))
+	make_box_body(level, Vector3(12.0, 0.2, 12.0), Vector3(0.0, -0.1, 0.0))
 	# Four 20 cm voxel risers. The last box continues as a landing so floor snap also has a stable
 	# surface after the ascent.
 	for step in 4:
@@ -39,7 +12,7 @@ func _run() -> void:
 		var center_z := 0.95 - float(step) * 0.65
 		if step == 3:
 			center_z -= 1.15
-		_box(level, Vector3(0.0, top * 0.5, center_z), Vector3(2.2, top, depth))
+		make_box_body(level, Vector3(2.2, top, depth), Vector3(0.0, top * 0.5, center_z))
 
 	var player := CharacterBody3D.new()
 	player.name = "Player"

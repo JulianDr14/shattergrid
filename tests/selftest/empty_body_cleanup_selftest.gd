@@ -1,26 +1,10 @@
-extends SceneTree
+extends "res://tests/selftest/selftest.gd"
 ## Un Body sin voxeles no puede conservar masa, compound ni referencias en el World.
-
-var failures := 0
-
-
-func _init() -> void:
-	_run.call_deferred()
-
-
-func _check(condition: bool, message: String) -> void:
-	if condition:
-		print("  ok   ", message)
-	else:
-		failures += 1
-		printerr("  FALLO ", message)
 
 
 func _run() -> void:
 	print("limpieza de Bodies físicos vacíos")
-	var world := VoxelWorld3D.new()
-	world.show_diagnostics = false
-	root.add_child(world)
+	var world := make_world(false)
 	var body := VoxelBody3D.new()
 	body.state = VoxelBody3D.State.DYNAMIC
 	world.add_child(body)

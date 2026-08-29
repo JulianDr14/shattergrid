@@ -1,4 +1,4 @@
-extends SceneTree
+extends "res://tests/selftest/selftest.gd"
 ## Rodillos del tren de rodaje: giran con el avance y suben/bajan con la suspensión, sin que sacar
 ## su arte del casco cambie la altura a la que el tanque descansa.
 
@@ -11,36 +11,11 @@ class Gunner:
 		add_child(camera)
 
 
-var failures := 0
-
-
-func _init() -> void:
-	_run.call_deferred()
-
-
-func _check(condition: bool, message: String) -> void:
-	if condition:
-		print("  ok   ", message)
-	else:
-		failures += 1
-		printerr("  FALLO ", message)
-
-
 func _run() -> void:
 	print("rodillos del tanque")
-	var world := VoxelWorld3D.new()
-	world.show_diagnostics = false
-	world.physics_budget = VoxelPhysicsBudget.new()
-	root.add_child(world)
+	var world := make_world()
 
-	var floor_body := StaticBody3D.new()
-	var floor_shape := CollisionShape3D.new()
-	var box := BoxShape3D.new()
-	box.size = Vector3(60, 1, 60)
-	floor_shape.shape = box
-	floor_shape.position = Vector3(0, -0.5, 0)
-	floor_body.add_child(floor_shape)
-	world.add_child(floor_body)
+	make_box_body(world, Vector3(60, 1, 60), Vector3(0, -0.5, 0))
 
 	var gunner := Gunner.new()
 	root.add_child(gunner)

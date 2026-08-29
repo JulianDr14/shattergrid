@@ -1,27 +1,10 @@
-extends SceneTree
+extends "res://tests/selftest/selftest.gd"
 ## El fragmento no entra al solver hasta que la colisión estática de origen refleja el corte.
-
-var failures := 0
-
-
-func _init() -> void:
-	_run.call_deferred()
-
-
-func _check(condition: bool, message: String) -> void:
-	if condition:
-		print("  ok   ", message)
-	else:
-		failures += 1
-		printerr("  FALLO ", message)
 
 
 func _run() -> void:
 	print("handoff y coherencia de colisión")
-	var world := VoxelWorld3D.new()
-	world.show_diagnostics = false
-	world.physics_budget = VoxelPhysicsBudget.new()
-	root.add_child(world)
+	var world := make_world()
 	var body := VoxelBody3D.new()
 	world.add_child(body)
 	var shape := VoxelShape3D.new()

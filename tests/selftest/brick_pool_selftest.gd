@@ -17,7 +17,10 @@ func _init() -> void:
 		_noise_shape(Vector3i(8, 8, 8), 11),
 	]
 	# Tres bricks de capacidad justa por Shape sería frágil; se pide de sobra y se comprueba el uso.
-	assert(pool.configure(Vector3i(4, 4, 8)))
+	# `assert` se elimina en release: el fallo se cuenta para que salga por el codigo de salida.
+	if not pool.configure(Vector3i(4, 4, 8)):
+		failures += 1
+		printerr("  FALLO el pool de bricks no acepta la capacidad pedida")
 	var tables: Array[PackedInt32Array] = []
 	for shape in shapes:
 		var table := pool.append_shape(shape)

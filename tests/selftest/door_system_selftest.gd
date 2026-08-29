@@ -1,20 +1,6 @@
-extends SceneTree
+extends "res://tests/selftest/selftest.gd"
 
 var LEE_MAP := VoxelProjectPaths.teardown_map_path()
-
-var failures := 0
-
-
-func _init() -> void:
-	_run.call_deferred()
-
-
-func _check(condition: bool, message: String) -> void:
-	if condition:
-		print("  ok   ", message)
-	else:
-		failures += 1
-		printerr("  FALLO ", message)
 
 
 static func _record(position: Vector3, type := "ball", size := "0.16") -> Dictionary:

@@ -1,4 +1,4 @@
-extends SceneTree
+extends "res://tests/selftest/selftest.gd"
 ## Un cuerpo que se vuelve dinamico DESPUES de registrarse -una torre que pierde su apoyo, un tramo
 ## de tuberia que se suelta- tiene que entrar en la lista de Shapes que el render vigila cada frame.
 ##
@@ -6,26 +6,10 @@ extends SceneTree
 ## quedaba un fantasma de pie en el sitio de antes, atravesable e indestructible, mientras los
 ## voxeles reales ya estaban en el suelo. La sombra si se movia, que era la pista.
 
-var failures := 0
-
-
-func _init() -> void:
-	_run.call_deferred()
-
-
-func _check(condition: bool, message: String) -> void:
-	if condition:
-		print("  ok   ", message)
-	else:
-		failures += 1
-		printerr("  FALLO ", message)
-
 
 func _run() -> void:
 	print("Shapes que el render vigila")
-	var world := VoxelWorld3D.new()
-	world.show_diagnostics = false
-	world.physics_budget = VoxelPhysicsBudget.new()
+	var world := make_world()
 	world.renderer_settings = VoxelRendererSettings.new()
 	world.renderer_settings.sun_shadows_enabled = false
 	root.add_child(world)

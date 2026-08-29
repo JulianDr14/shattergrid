@@ -1,22 +1,8 @@
-extends SceneTree
+extends "res://tests/selftest/selftest.gd"
 ## Los props del mapa nacen dormidos, no congelados. Dormido significa que Jolt no lo simula hasta
 ## que algo lo toca; congelado significaba estatica muerta que no reaccionaba a nada. La diferencia
 ## es todo el mundo vivo: cajas que se empujan, tuberias que cuelgan de sus joints, bidones que salen
 ## volando con una explosion al lado.
-
-var failures := 0
-
-
-func _init() -> void:
-	_run.call_deferred()
-
-
-func _check(condition: bool, message: String) -> void:
-	if condition:
-		print("  ok   ", message)
-	else:
-		failures += 1
-		printerr("  FALLO ", message)
 
 
 func _make_body(world: VoxelWorld3D, origin: Vector3, dynamic: bool) -> VoxelBody3D:
@@ -45,10 +31,7 @@ func _height(body: VoxelBody3D) -> float:
 
 func _run() -> void:
 	print("props vivos")
-	var world := VoxelWorld3D.new()
-	world.show_diagnostics = false
-	world.physics_budget = VoxelPhysicsBudget.new()
-	root.add_child(world)
+	var world := make_world()
 
 	var floor_body := _make_body(world, Vector3(0, 0, 0), false)
 	floor_body.name = "Suelo"

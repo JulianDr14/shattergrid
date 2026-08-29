@@ -1,22 +1,8 @@
-extends SceneTree
+extends "res://tests/selftest/selftest.gd"
 ## Regresion sobre el SUV authored de Lee: XML -> VehicleBody -> suspension -> luces DDA.
 
 var MAP := VoxelProjectPaths.teardown_map_path()
 const SUV_CENTER := Vector3(-16.1, 0.0, 21.5)
-
-var failures := 0
-
-
-func _init() -> void:
-	_run.call_deferred()
-
-
-func _check(condition: bool, message: String) -> void:
-	if condition:
-		print("  ok   ", message)
-	else:
-		failures += 1
-		printerr("  FALLO ", message)
 
 
 func _make_wood_wall(
@@ -63,14 +49,7 @@ func _run() -> void:
 	var vehicle := vehicles[0] as VoxelVehicle3D
 	# El recorte por origen de Shape puede excluir el gran terreno que atraviesa esta zona aunque el
 	# SUV sí entre. Un plano local a la cota authored aísla la prueba del tren motriz de ese detalle.
-	var road := StaticBody3D.new()
-	var road_collision := CollisionShape3D.new()
-	var road_shape := BoxShape3D.new()
-	road_shape.size = Vector3(30.0, 0.4, 30.0)
-	road_collision.shape = road_shape
-	road.position.y = 0.9
-	road.add_child(road_collision)
-	root.add_child(road)
+	make_box_body(root, Vector3(30.0, 0.4, 30.0), Vector3(0.0, 0.9, 0.0))
 	_check(vehicle.get_child_count() >= 4, "se crearon los cuatro raycasts de suspension")
 	_check(vehicle.voxel_owner != null and vehicle.voxel_owner.get_physics_body() == vehicle,
 		"la carroceria destructible y el vehiculo comparten una sola verdad fisica")
@@ -275,8 +254,14 @@ func _run() -> void:
 	_check(player_camera.global_position.distance_to(vehicle.get_driver_view_position()) < 0.15,
 		"la vista interior usa el punto de conductor authored del XML")
 	player.call("_toggle_vehicle")
-	_check(not bool(player.call("is_driving_vehicle")) and player.collision_layer != 0,
-		"un segundo E deja al jugador junto al vehículo")
+	_check(not bool(player.call("is_driving_vehicle")),
+		"un segundo E baja al jugador del vehículo")
+	# La cápsula sale con la colisión apagada a propósito y `_restore_vehicle_collision` la devuelve
+	# dos `_physics_process` después: mirarla en el mismo tick medía el apagado, no la restitución.
+	for _frame in 3:
+		await physics_frame
+	_check(player.collision_layer != 0,
+		"la cápsula recupera su colisión tras la salida")
 	_check(is_equal_approx(player_camera.fov, original_fov),
 		"salir restaura el FOV de la cámara a pie")
 

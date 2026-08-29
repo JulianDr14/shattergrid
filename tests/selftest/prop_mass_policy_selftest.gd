@@ -1,27 +1,11 @@
-extends SceneTree
+extends "res://tests/selftest/selftest.gd"
 
 const FIXTURE := "res://tests/fixtures/mass_policy_map.xml"
-
-var failures := 0
-
-
-func _init() -> void:
-	_run.call_deferred()
-
-
-func _check(condition: bool, message: String) -> void:
-	if condition:
-		print("  ok   ", message)
-	else:
-		failures += 1
-		printerr("  FALLO ", message)
 
 
 func _run() -> void:
 	print("política de masa: props huecos frente a estructura sólida")
-	var world := VoxelWorld3D.new()
-	world.show_diagnostics = false
-	root.add_child(world)
+	var world := make_world(false)
 	TeardownMapImporter.import_map(world, ProjectSettings.globalize_path(FIXTURE),
 		Vector3.ZERO, 100.0, Vector3.ZERO, true)
 	var by_tag := {}

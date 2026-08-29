@@ -1,21 +1,7 @@
-extends SceneTree
+extends "res://tests/selftest/selftest.gd"
 ## La rejilla tiene que dar exactamente lo mismo que barrer todas las Shapes, tambien despues de
 ## mover y de borrar. Y `_coalesce` no puede juntar cajas lejanas: esa fusion a ciegas era la que
 ## convertia dos escombros en extremos opuestos del mapa en una region de 250 m.
-
-var failures := 0
-
-
-func _init() -> void:
-	_run.call_deferred()
-
-
-func _check(condition: bool, message: String) -> void:
-	if condition:
-		print("  ok   ", message)
-	else:
-		failures += 1
-		printerr("  FALLO ", message)
 
 
 func _shape(parent: Node3D, position: Vector3, size: Vector3i) -> VoxelShape3D:

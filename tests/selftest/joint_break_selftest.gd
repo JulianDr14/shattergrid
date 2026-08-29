@@ -1,21 +1,7 @@
-extends SceneTree
+extends "res://tests/selftest/selftest.gd"
 ## Un joint deja de sujetar cuando le vuelan los voxeles del anclaje. Sin esto, un `Joint3D` de Godot
 ## es eterno: destruyes el tramo de tuberia entero y la restriccion sigue sosteniendo los pedazos en
 ## el aire, que es justo lo que se veia en el mapa.
-
-var failures := 0
-
-
-func _init() -> void:
-	_run.call_deferred()
-
-
-func _check(condition: bool, message: String) -> void:
-	if condition:
-		print("  ok   ", message)
-	else:
-		failures += 1
-		printerr("  FALLO ", message)
 
 
 func _make_body(world: VoxelWorld3D, origin: Vector3, dimensions: Vector3i,
@@ -45,10 +31,7 @@ func _height(body: VoxelBody3D) -> float:
 
 func _run() -> void:
 	print("rotura de joints")
-	var world := VoxelWorld3D.new()
-	world.show_diagnostics = false
-	world.physics_budget = VoxelPhysicsBudget.new()
-	root.add_child(world)
+	var world := make_world()
 
 	# Un soporte fijo y un tramo colgando de el por un joint, como una tuberia de Lee.
 	var mount := _make_body(world, Vector3(0, 4, 0), Vector3i(8, 8, 8), false)

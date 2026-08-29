@@ -1,20 +1,6 @@
-extends SceneTree
+extends "res://tests/selftest/selftest.gd"
 ## Un choque real de Jolt debe dañar a los dos volúmenes, una sola vez por contacto dominante, sin
 ## convertirlo en explosión radial ni ejecutar mutaciones dentro de `_integrate_forces`.
-
-var failures := 0
-
-
-func _init() -> void:
-	_run.call_deferred()
-
-
-func _check(condition: bool, message: String) -> void:
-	if condition:
-		print("  ok   ", message)
-	else:
-		failures += 1
-		printerr("  FALLO ", message)
 
 
 func _make_body(

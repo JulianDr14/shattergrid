@@ -1,20 +1,4 @@
-extends SceneTree
-
-var failures := 0
-
-
-func _init() -> void:
-	_run.call_deferred()
-
-
-func _check(condition: bool, message: String) -> void:
-	if condition:
-		print("  ok   ", message)
-	else:
-		failures += 1
-		printerr("  FALLO ", message)
-
-
+extends "res://tests/selftest/selftest.gd"
 ## Voxeles retirados de una losa de un voxel de grosor por un disparo de radio 10 y penetración 1,5.
 ## La losa plana convierte el radio alcanzado en un área comparable entre durezas.
 func _crater(hardness: float) -> int:
@@ -48,9 +32,7 @@ func _run() -> void:
 	_check(legacy_count == Blueprints.of("casa").size() * 27,
 		"cada celda heredada de 30 cm se expande una vez a 3x3x3")
 
-	var world := VoxelWorld3D.new()
-	world.show_diagnostics = false
-	root.add_child(world)
+	var world := make_world(false)
 	var body := VoxelBody3D.new()
 	world.add_child(body)
 	var shape := VoxelShape3D.new()
@@ -244,9 +226,7 @@ func _run() -> void:
 
 	# La malla estatica tiene que frenar por FUERA. Con caras de un solo lado y el devanado que
 	# genera `build_macro_faces`, la cara solida miraba hacia dentro y se caia uno por el suelo.
-	var floor_world := VoxelWorld3D.new()
-	floor_world.show_diagnostics = false
-	root.add_child(floor_world)
+	var floor_world := make_world(false)
 	var floor_body := VoxelBody3D.new()
 	floor_world.add_child(floor_body)
 	var floor_shape := VoxelShape3D.new()

@@ -1,20 +1,6 @@
-extends SceneTree
+extends "res://tests/selftest/selftest.gd"
 ## Regresión del agarre unificado: la autoridad para poder coger algo es el estado dinámico del
 ## VoxelBody, no que el collider tenga la etiqueta de puerta.
-
-var failures := 0
-
-
-func _init() -> void:
-	_run.call_deferred()
-
-
-func _check(condition: bool, message: String) -> void:
-	if condition:
-		print("  ok   ", message)
-	else:
-		failures += 1
-		printerr("  FALLO ", message)
 
 
 func _make_body(

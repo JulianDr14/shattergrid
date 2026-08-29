@@ -1,25 +1,17 @@
-extends SceneTree
-## Regresión del techo suspendido: la continuación toca el cuarto componente, que necesariamente
-## pasa por la cola de fragmentos. Antes esa cola creaba el RigidBody pero omitía la propagación de
-## soporte que sí ejecutaban los tres fragmentos inmediatos.
-
-var failures := 0
-
-
-func _init() -> void:
-	_run.call_deferred()
-
-
-func _check(condition: bool, message: String) -> void:
-	if condition:
-		print("  ok   ", message)
-	else:
-		failures += 1
-		printerr("  FALLO ", message)
+extends "res://tests/selftest/selftest.gd"
+## La cola de fragmentos: un disparo que parte algo en muchos trozos no puede crear todos los
+## RigidBody en el mismo frame -medido en Lee, ocho con su compound son 37 ms, mas del doble del
+## presupuesto a 60 fps-, asi que se crean unos cuantos y el resto espera turno.
+##
+## Dos regresiones sobre esa cola:
+## - El techo suspendido: la continuación toca el cuarto componente, que necesariamente pasa por la
+##   cola. Antes esa cola creaba el RigidBody pero omitía la propagación de soporte que sí
+##   ejecutaban los tres fragmentos inmediatos.
+## - El reparto no puede perder trozos: los mismos que antes, repartidos en varios frames.
 
 
 func _shape_body(world: VoxelWorld3D, dimensions: Vector3i, cells: PackedByteArray,
-		position := Vector3.ZERO) -> VoxelBody3D:
+		position := Vector3.ZERO, hardness := 1.0) -> VoxelBody3D:
 	var body := VoxelBody3D.new()
 	body.position = position
 	world.add_child(body)
@@ -28,7 +20,7 @@ func _shape_body(world: VoxelWorld3D, dimensions: Vector3i, cells: PackedByteArr
 	shape.data.set_cells(dimensions, cells)
 	shape.palette = VoxelPalette.new()
 	shape.palette.set_material(1, {
-		"color": Color.GRAY, "hardness": 1.0, "density": 1000.0,
+		"color": Color.GRAY, "hardness": hardness, "density": 1000.0,
 	})
 	shape.anchored = false
 	body.add_voxel_shape(shape)
@@ -38,10 +30,7 @@ func _shape_body(world: VoxelWorld3D, dimensions: Vector3i, cells: PackedByteArr
 
 func _run() -> void:
 	print("continuación estática en fragmento diferido")
-	var world := VoxelWorld3D.new()
-	world.show_diagnostics = false
-	world.physics_budget = VoxelPhysicsBudget.new()
-	root.add_child(world)
+	var world := make_world()
 
 	var dimensions := Vector3i(32, 4, 4)
 	var cells := PackedByteArray()
@@ -96,6 +85,56 @@ func _run() -> void:
 	_check(world._pending_fragments.is_empty(), "la cola de fragmentos queda drenada")
 	_check(world.get_metrics().pending_collision_handoffs == 0,
 		"el handoff de colisión también queda drenado")
+
+	# Reparto sin perdidas: un nucleo macizo con una cola fina y ocho islas de 32 voxeles alrededor.
+	# Al cortar la cola se sueltan tambien las islas cercanas: nueve trozos de golpe, y todos tienen
+	# que acabar existiendo aunque el frame del disparo solo pueda crear FRAGMENTS_PER_FRAME.
+	var world_budget := make_world()
+	var budget_dimensions := Vector3i(25, 3, 25)
+	var budget_cells := PackedByteArray()
+	budget_cells.resize(budget_dimensions.x * budget_dimensions.y * budget_dimensions.z)
+	var put_budget := func(x: int, y: int, z: int) -> void:
+		budget_cells[x + y * budget_dimensions.x
+			+ z * budget_dimensions.x * budget_dimensions.y] = 1
+	for x in range(10, 15):
+		for y in 3:
+			for z in range(10, 15):
+				put_budget.call(x, y, z)
+	for x in range(15, 18):
+		put_budget.call(x, 1, 12)
+	var islands := 0
+	for corner: Vector2i in [
+		Vector2i(19, 3), Vector2i(19, 15), Vector2i(6, 3), Vector2i(6, 15),
+		Vector2i(3, 3), Vector2i(3, 15), Vector2i(22, 3), Vector2i(22, 15),
+	]:
+		islands += 1
+		for x in range(corner.x, corner.x + 2):
+			for y in 2:
+				for z in range(corner.y, corner.y + 8):
+					put_budget.call(x, y, z)
+	# Dureza alta y energia baja: el crater es de un voxel, asi que corta la cola y no toca las islas,
+	# pero el radio -que es lo que decide que trozos cuentan como "cerca"- sigue siendo grande.
+	var chunk := _shape_body(world_budget, budget_dimensions, budget_cells, Vector3.ZERO, 20.0)
+	var chunk_shape := chunk.get_shapes()[0]
+	for _frame in 4:
+		await physics_frame
+	var crater := chunk_shape.voxel_center_world(
+		15 + budget_dimensions.x + 12 * budget_dimensions.x * budget_dimensions.y
+	)
+	var spawned := 0
+	for entry: Dictionary in world_budget.damage_sphere(crater, 1.0, 2.0):
+		spawned += (entry.new_bodies as Array).size()
+	_check(spawned > 0 and spawned <= VoxelWorld3D.FRAGMENTS_PER_FRAME,
+		"el frame del disparo no crea mas de %d cuerpos" % VoxelWorld3D.FRAGMENTS_PER_FRAME)
+	for _frame in 12:
+		await physics_frame
+		world_budget._process(1.0 / 60.0)
+	var total := world_budget.get_dynamic_bodies().size()
+	print("  reparto: %d en el frame del disparo, %d tras vaciar la cola (islas sueltas: %d)" % [
+		spawned, total, islands,
+	])
+	_check(total > spawned, "los trozos que faltaban llegan en los frames siguientes")
+	_check(total >= islands, "no se pierde ningun trozo por el camino (%d de %d)" % [total, islands])
 
 	if failures == 0:
 		print("VOXEL_DEFERRED_CONTINUATION_SELFTEST_OK")

@@ -1,4 +1,4 @@
-extends SceneTree
+extends "res://tests/selftest/selftest.gd"
 ## Fogonazo de boca: sale por el bocacho, mirando por el ánima, y el cañón respeta su cadencia.
 
 class Gunner:
@@ -8,34 +8,11 @@ class Gunner:
 		camera = Camera3D.new()
 		add_child(camera)
 
-var failures := 0
-
-func _init() -> void:
-	_run.call_deferred()
-
-
-func _check(condition: bool, message: String) -> void:
-	if condition:
-		print("  ok   ", message)
-	else:
-		failures += 1
-		printerr("  FALLO ", message)
-
 
 func _run() -> void:
 	print("fogonazo del tanque")
-	var world := VoxelWorld3D.new()
-	world.show_diagnostics = false
-	world.physics_budget = VoxelPhysicsBudget.new()
-	root.add_child(world)
-	var floor_body := StaticBody3D.new()
-	var floor_shape := CollisionShape3D.new()
-	var box := BoxShape3D.new()
-	box.size = Vector3(80, 1, 80)
-	floor_shape.shape = box
-	floor_shape.position = Vector3(0, -0.5, 0)
-	floor_body.add_child(floor_shape)
-	world.add_child(floor_body)
+	var world := make_world()
+	make_box_body(world, Vector3(80, 1, 80), Vector3(0, -0.5, 0))
 	var gunner := Gunner.new()
 	root.add_child(gunner)
 	var tank := VoxelTank3D.spawn(world, Vector3(0, 1.0, 0), gunner)

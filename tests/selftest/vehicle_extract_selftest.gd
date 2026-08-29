@@ -1,30 +1,13 @@
-extends SceneTree
+extends "res://tests/selftest/selftest.gd"
 ## Igual que `vehicle_extract_probe.gd` pero sobre el flujo completo: Shape -> VoxelBody3D dinamico
 ## registrado en un VoxelWorld3D real, cayendo por gravedad. Es lo que hace `--teardown-vehicles` en
 ## main.gd para las pruebas de fisica.
 var VOX_DIR := VoxelProjectPaths.teardown_vox_dir()
 
-var failures := 0
-
-
-func _init() -> void:
-	_run.call_deferred()
-
-
-func _check(condition: bool, message: String) -> void:
-	if condition:
-		print("  ok   ", message)
-	else:
-		failures += 1
-		printerr("  FALLO ", message)
-
 
 func _run() -> void:
 	print("vehiculos extraidos del mapa como cuerpos de prueba")
-	var world := VoxelWorld3D.new()
-	world.show_diagnostics = false
-	world.physics_budget = VoxelPhysicsBudget.new()
-	root.add_child(world)
+	var world := make_world()
 
 	var floor_shape := VoxelShape3D.new()
 	floor_shape.data = VoxelShapeData.new()

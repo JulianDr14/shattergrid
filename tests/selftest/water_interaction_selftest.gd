@@ -1,19 +1,5 @@
-extends SceneTree
+extends "res://tests/selftest/selftest.gd"
 ## Regresión de gameplay: entrada de un RigidBody, flotación/drag y jugador retenido en superficie.
-
-var failures := 0
-
-
-func _init() -> void:
-	_run.call_deferred()
-
-
-func _check(condition: bool, message: String) -> void:
-	if condition:
-		print("  ok   ", message)
-	else:
-		failures += 1
-		printerr("  FALLO ", message)
 
 
 func _make_water(parent: Node) -> VoxelWaterSystem:
@@ -51,9 +37,7 @@ func _make_prop(world: VoxelWorld3D) -> VoxelBody3D:
 
 func _run() -> void:
 	print("interacción con agua")
-	var world := VoxelWorld3D.new()
-	world.show_diagnostics = false
-	root.add_child(world)
+	var world := make_world(false)
 	var water := _make_water(world)
 	water.setup(world)
 	var prop := _make_prop(world)
@@ -140,14 +124,7 @@ func _run() -> void:
 	_check(not vehicle.can_enter(player.global_position, 20.0),
 		"un vehículo inundado no se puede volver a conducir")
 
-	var seabed := StaticBody3D.new()
-	var seabed_collision := CollisionShape3D.new()
-	var seabed_box := BoxShape3D.new()
-	seabed_box.size = Vector3(20.0, 0.4, 20.0)
-	seabed_collision.shape = seabed_box
-	seabed.add_child(seabed_collision)
-	seabed.position.y = -2.8
-	root.add_child(seabed)
+	make_box_body(root, Vector3(20.0, 0.4, 20.0), Vector3(0.0, -2.8, 0.0))
 	var late_angular_peak := 0.0
 	for frame in 240:
 		await physics_frame

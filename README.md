@@ -94,6 +94,10 @@ godot --headless --path . --script res://tests/selftest/physics_budget_selftest.
 godot --headless --path . --script res://tests/selftest/water_system_selftest.gd
 ```
 
+Cada test hereda de `tests/selftest/selftest.gd`, que aporta el contador `failures`, `_check()`,
+`make_world()` y `make_box_body()`. Solo hay que definir `_run()` y cerrar con
+`quit(1 if failures > 0 else 0)`; no redefinas `_init`, el de la base ya difiere `_run`.
+
 Las sondas cuyos nombres empiezan por `map_`, además de los censos de Lee y las pruebas completas
 de vehículos, requieren `SHATTERGRID_MAP` o el mapa local en
 `external/teardown_maps/lee`.

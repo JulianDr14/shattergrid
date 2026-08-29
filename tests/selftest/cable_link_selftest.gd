@@ -1,24 +1,10 @@
-extends SceneTree
+extends "res://tests/selftest/selftest.gd"
 ## Las conexiones entre cuerpos: joints que sobreviven a que un cuerpo cambie de `PhysicsBody`, y
 ## cables que van clavados a un cuerpo, tiran de el y se rompen si se pasan de estiramiento.
 ##
 ## Los dos fallos que cubre se veian igual en el mapa: volabas la base de un poste, el poste caia y
 ## se soltaba de la tuberia aunque el punto de union estuviera intacto; y volabas un poste con cables
 ## y los cables se quedaban colgados en el aire, sin enterarse.
-
-var failures := 0
-
-
-func _init() -> void:
-	_run.call_deferred()
-
-
-func _check(condition: bool, message: String) -> void:
-	if condition:
-		print("  ok   ", message)
-	else:
-		failures += 1
-		printerr("  FALLO ", message)
 
 
 func _slab(world: VoxelWorld3D, origin: Vector3, dimensions: Vector3i,
@@ -43,10 +29,7 @@ func _slab(world: VoxelWorld3D, origin: Vector3, dimensions: Vector3i,
 
 func _run() -> void:
 	print("uniones entre cuerpos")
-	var world := VoxelWorld3D.new()
-	world.show_diagnostics = false
-	world.physics_budget = VoxelPhysicsBudget.new()
-	root.add_child(world)
+	var world := make_world()
 
 	# Un poste estatico y una tuberia dinamica unidos por un joint a media altura.
 	var post := _slab(world, Vector3(0.0, 2.0, 0.0), Vector3i(4, 40, 4))

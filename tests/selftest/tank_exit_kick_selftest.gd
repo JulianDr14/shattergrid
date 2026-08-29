@@ -1,24 +1,10 @@
-extends SceneTree
+extends "res://tests/selftest/selftest.gd"
 ## Regresión: bajarse del vehículo no puede empujarlo.
 ##
 ## La cápsula del jugador viaja pegada al asiento, dentro del casco, con la colisión apagada. Si al
 ## salir se le devuelve la colisión en el mismo frame en que se la teletransporta fuera, Jolt lee
 ## ese salto como movimiento cinemático y la cápsula barre el vehículo de dentro afuera: medido, un
 ## pico de 220 m/s que mandaba el tanque por los aires y lo hundía en el suelo.
-
-var failures := 0
-
-
-func _init() -> void:
-	_run.call_deferred()
-
-
-func _check(condition: bool, message: String) -> void:
-	if condition:
-		print("  ok   ", message)
-	else:
-		failures += 1
-		printerr("  FALLO ", message)
 
 
 func _make_player() -> CharacterBody3D:
@@ -40,19 +26,9 @@ func _make_player() -> CharacterBody3D:
 
 
 func _run() -> void:
-	var world := VoxelWorld3D.new()
-	world.show_diagnostics = false
-	world.physics_budget = VoxelPhysicsBudget.new()
-	root.add_child(world)
+	var world := make_world()
 
-	var floor_body := StaticBody3D.new()
-	var floor_shape := CollisionShape3D.new()
-	var box := BoxShape3D.new()
-	box.size = Vector3(80, 1, 80)
-	floor_shape.shape = box
-	floor_shape.position = Vector3(0, -0.5, 0)
-	floor_body.add_child(floor_shape)
-	world.add_child(floor_body)
+	make_box_body(world, Vector3(80, 1, 80), Vector3(0, -0.5, 0))
 
 	var player := _make_player()
 	root.add_child(player)
