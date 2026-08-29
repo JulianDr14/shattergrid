@@ -715,6 +715,11 @@ func _process_physics_impacts() -> void:
 		var radius := float(profile.radius)
 		var penetration := float(profile.penetration)
 		var vehicle_impact := bool(profile.vehicle)
+		# Mismo criterio que `queue_physics_impact`: un vehículo solo daña al cuerpo que embistió. Si
+		# la destrucción liberó ese cuerpo mientras el impacto esperaba turno, ya no queda nada que
+		# romper y la esfera sin `only_bodies` mordería el propio casco del que embiste.
+		if vehicle_impact and target == null:
+			continue
 		var extra_bodies: Array[VoxelBody3D] = [source]
 		if target != null and is_instance_valid(target):
 			extra_bodies.append(target)
